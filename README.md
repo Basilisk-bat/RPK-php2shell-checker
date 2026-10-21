@@ -47,8 +47,8 @@ or `unknown`). Invalid arguments exit with code `2`.
 node --test phpcheck.test.js
 ```
 
-Tests run the CLI against local HTTP servers simulating PHP response headers;
-no PHP installation or external website is required.
+Tests run the CLI against local HTTP servers and a fake PHP executable.
+No PHP installation or external website is required.
 
 ## Limitations
 

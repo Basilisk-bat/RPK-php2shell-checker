@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict')
 const { spawn } = require('node:child_process')
 const { once } = require('node:events')
-const { cp, mkdtemp, rm } = require('node:fs/promises')
+const { cp, mkdtemp, rm, writeFile } = require('node:fs/promises')
 const http = require('node:http')
 const { tmpdir } = require('node:os')
 const path = require('node:path')
@@ -39,6 +39,43 @@ function check(result, status, version) {
   assert.equal(report.exit_code, code)
   return report
 }
+
+async function runLocal(t, output) {
+  const directory = await mkdtemp(path.join(tmpdir(), 'phpcheck-local-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const php = path.join(directory, 'php')
+  await writeFile(php, `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(output)})\n`, { mode: 0o755 })
+  return run(['--local', '--php', php, '--json'])
+}
+
+for (const [version, status] of [
+  ['8.4.26', 'vulnerable'],
+  ['8.4.27', 'ok'],
+  ['8.4.27-1+ubuntu24.04.1+deb.sury.org+1', 'ok'],
+  ['8.4.27RC1', 'unknown'],
+  ['9.0.0', 'unknown'],
+]) {
+  test(`local PHP ${version} with copyright line => ${status}`, async t => {
+    const output = `PHP ${version} (cli) (NTS)\nCopyright (c) The PHP Group\nZend Engine v4.4.27\n`
+    check(await runLocal(t, output), status, version)
+  })
+}
+
+for (const warning of [
+  'Warning: PHP Startup: Unable to load dynamic library redis',
+  'Warning: Failed loading /usr/lib/php/20240924/redis.so',
+]) {
+  test(`local PHP ignores ${warning}`, async t => {
+    const output = `${warning}\nPHP 8.4.27 (cli) (NTS)\nCopyright (c) The PHP Group\n`
+    check(await runLocal(t, output), 'ok', '8.4.27')
+  })
+}
+
+test('local output without a version banner => unknown', async t => {
+  const output = 'PHP Warning: PHP Startup: Failed loading /usr/lib/php/20240924/redis.so\nCopyright (c) The PHP Group\n'
+  const report = check(await runLocal(t, output), 'unknown', null)
+  assert.equal(report.reason, 'PHP version not found')
+})
 
 for (const header of ['X-Powered-By', 'x-PoWeReD-bY', 'Server']) {
   for (const [version, status] of [['8.4.26', 'vulnerable'], ['8.4.27', 'ok'], ['8.4.100', 'ok']]) {

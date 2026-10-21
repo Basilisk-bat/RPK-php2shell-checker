@@ -76,7 +76,9 @@ async function main() {
     const text = values.local
       ? execFileSync(values.php, ['-v'], { encoding: 'utf8', timeout: 10000 })
       : await urlHeaders(address, timeout)
-    for (const match of text.matchAll(/\bPHP[ /]([^\s,;)]+)/gi)) {
+    // Local output includes copyright text and may include startup warnings.
+    const pattern = values.local ? /^PHP (\d[^\s,;)]*)/gm : /\bPHP[ /]([^\s,;)]+)/gi
+    for (const match of text.matchAll(pattern)) {
       const candidateStatus = patchStatus(match[1])
       // Do not let an OK banner hide a vulnerable or unrecognized PHP version.
       if (version === null || candidateStatus === 'vulnerable' || status === 'ok') {
