@@ -28,12 +28,39 @@ Check local PHP:
 node phpcheck.js --local
 ```
 
+## Results
+
+| Result | Exit code | Meaning |
+| --- | --- | --- |
+| `OK` | `0` | Stable PHP patch version above the embedded cutoff for a listed major/minor branch. |
+| `VULNERABLE` | `1` | PHP version at or below the embedded cutoff for that branch. |
+| `UNKNOWN` | `3` | No PHP version or response, an unrecognized version/branch, or a newer prerelease build. |
+
+Use `--json` for machine-readable output (`patch_status` is `ok`, `vulnerable`,
+or `unknown`). Invalid arguments exit with code `2`.
+
+## Tests
+
+```sh
+node --test phpcheck.test.js
+```
+
+Tests run the CLI against local HTTP servers simulating PHP response headers;
+no PHP installation or external website is required.
+
 ## Limitations
 
 The checker only evaluates versions exposed in HTTP response headers or by
-`php -v`. `UNKNOWN` means it could not confirm a vulnerable version, not that
-the target is patched. The embedded version ranges are current as of October
-20, 2026.
+`php -v`. It reads `X-Powered-By` and `Server`, sends `HEAD`, and falls back to
+`GET` only when `HEAD` returns 405 or 501. It does not follow redirects or
+inspect response bodies. Missing or hidden PHP headers return `UNKNOWN`.
+
+`OK` is a version comparison against the embedded October 20, 2026 cutoffs,
+assuming subsequent stable patches in each listed branch contain the fix;
+it does not independently verify a security fix. Check the cutoffs against
+the official PHP security release when its affected and fixed versions are
+published. Headers can be hidden or changed, and distribution backports may
+not change the upstream version. `UNKNOWN` does not mean the target is patched.
 
 ## Contributing
 

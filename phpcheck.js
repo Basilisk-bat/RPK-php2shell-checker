@@ -3,7 +3,8 @@ const { execFileSync } = require('node:child_process')
 const { parseArgs } = require('node:util')
 
 const VERSION = '1.0.0'
-// Known vulnerable releases as of 2026-10-20. Newer releases remain unknown.
+// Vulnerable version cutoffs as of 2026-10-20. A newer stable patch in a
+// listed branch is OK by this table; unlisted branches remain unknown.
 const VULNERABLE_THROUGH = {
   '5.4': 45, '5.5': 38, '5.6': 40,
   '7.0': 33, '7.1': 33, '7.2': 34, '7.3': 33, '7.4': 33,
@@ -13,10 +14,15 @@ const USAGE = 'Usage: node phpcheck.js URL [--timeout SECONDS] [--json]\n' +
   '       node phpcheck.js --local [--php PATH] [--json]\n' +
   '       node phpcheck.js --version'
 
-function isVulnerable(version) {
-  const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+~].*)?$/.exec(version || '')
-  if (!match) return false
-  return Number(match[3]) <= (VULNERABLE_THROUGH[`${Number(match[1])}.${Number(match[2])}`] ?? -1)
+function patchStatus(version) {
+  const match = /^(\d+)\.(\d+)\.(\d+)([-+~].*)?$/.exec(version || '')
+  if (!match) return 'unknown'
+  const cutoff = VULNERABLE_THROUGH[`${Number(match[1])}.${Number(match[2])}`]
+  if (cutoff === undefined) return 'unknown'
+  if (Number(match[3]) <= cutoff) return 'vulnerable'
+  // A development build of the next patch is not evidence of a stable fix.
+  if (/(?:^|[-+~.])(?:dev|alpha|beta|rc)/i.test(match[4] || '')) return 'unknown'
+  return 'ok'
 }
 
 async function urlHeaders(address, timeout) {
@@ -65,21 +71,25 @@ async function main() {
     return
   }
 
-  let version = null, error = null
+  let version = null, error = null, status = 'unknown'
   try {
     const text = values.local
       ? execFileSync(values.php, ['-v'], { encoding: 'utf8', timeout: 10000 })
       : await urlHeaders(address, timeout)
     for (const match of text.matchAll(/\bPHP[ /]([^\s,;)]+)/gi)) {
-      version = match[1]
-      if (isVulnerable(version)) break
+      const candidateStatus = patchStatus(match[1])
+      // Do not let an OK banner hide a vulnerable or unrecognized PHP version.
+      if (version === null || candidateStatus === 'vulnerable' || status === 'ok') {
+        version = match[1]
+        status = candidateStatus
+      }
+      if (status === 'vulnerable') break
     }
   } catch (exc) {
     error = exc.message
   }
 
-  const status = isVulnerable(version) ? 'vulnerable' : 'unknown'
-  const code = status === 'vulnerable' ? 1 : 3
+  const code = { ok: 0, vulnerable: 1, unknown: 3 }[status]
   const reason = error || (version ? 'PHP ' + version : 'PHP version not found')
   const report = { patch_status: status, php_version: version, reason, exit_code: code }
   console.log(values.json ? JSON.stringify(report) : status.toUpperCase() + ': ' + reason)
