@@ -1,13 +1,15 @@
 const assert = require('node:assert/strict')
 const { spawn } = require('node:child_process')
 const { once } = require('node:events')
+const { cp, mkdtemp, rm } = require('node:fs/promises')
 const http = require('node:http')
+const { tmpdir } = require('node:os')
 const path = require('node:path')
 const { test } = require('node:test')
 
-function run(args) {
+function run(args, script = path.join(__dirname, 'phpcheck.js')) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [path.join(__dirname, 'phpcheck.js'), ...args])
+    const child = spawn(process.execPath, [script, ...args])
     let stdout = '', stderr = ''
     child.stdout.on('data', chunk => { stdout += chunk })
     child.stderr.on('data', chunk => { stderr += chunk })
@@ -149,4 +151,19 @@ test('plain text output for a newer version is OK with exit code 0', async t => 
   assert.equal(result.stderr, '')
   assert.equal(result.code, 0)
   assert.equal(result.stdout, 'OK: PHP 8.4.27\n')
+})
+
+test('the URL skill runs independently with its bundled checker', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'phpcheck-url-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  await cp(path.join(__dirname, 'skills/phpcheck-url'), directory, { recursive: true })
+  const methods = []
+  const url = await serve(t, (req, res) => {
+    methods.push(req.method)
+    res.setHeader('X-Powered-By', 'PHP/8.4.27')
+    res.end()
+  })
+  const result = await run([url, '--json'], path.join(directory, 'scripts/phpcheck.js'))
+  check(result, 'ok', '8.4.27')
+  assert.deepEqual(methods, ['HEAD'])
 })

@@ -2,16 +2,18 @@
 
 Check a website or local PHP version without exploit requests. Uses Node.js. No packages to install.
 
-To install, ask Codex:
+To install both skills, ask Codex:
 
 ```text
-$skill-installer install the phpcheck-safe skill from https://github.com/openai/phrenetic-pheasant-checker
+$skill-installer install both skills from https://github.com/openai/php2shell-checker
 ```
 
-Then ask:
+Use [phpcheck-server](skills/phpcheck-server/SKILL.md) when you have server
+access, or [phpcheck-url](skills/phpcheck-url/SKILL.md) when you only have a URL:
 
 ```text
-$phpcheck-safe check https://example.com
+$phpcheck-server check the PHP version serving my site
+$phpcheck-url check example.com
 ```
 
 ## Run directly
@@ -22,7 +24,7 @@ Check a website:
 node phpcheck.js "https://example.com"
 ```
 
-Check local PHP:
+Check the local CLI PHP
 
 ```sh
 node phpcheck.js --local
