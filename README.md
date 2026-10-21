@@ -1,6 +1,6 @@
 # PHP Version Checker
 
-Check a website or local PHP version without exploit requests. Uses Node.js. No packages to install.
+Check a website or local PHP binary to see if it's vulnerable to php2shell.
 
 To install both skills, ask Codex:
 
@@ -12,8 +12,11 @@ Use [phpcheck-server](skills/phpcheck-server/SKILL.md) when you have server
 access, or [phpcheck-url](skills/phpcheck-url/SKILL.md) when you only have a URL:
 
 ```text
+$phpcheck-url check https://example.com
+```
+
+```text
 $phpcheck-server check the PHP version serving my site
-$phpcheck-url check example.com
 ```
 
 ## Run directly
@@ -57,12 +60,10 @@ The checker only evaluates versions exposed in HTTP response headers or by
 `GET` only when `HEAD` returns 405 or 501. It does not follow redirects or
 inspect response bodies. Missing or hidden PHP headers return `UNKNOWN`.
 
-`OK` is a version comparison against the embedded October 20, 2026 cutoffs,
-assuming subsequent stable patches in each listed branch contain the fix;
-it does not independently verify a security fix. Check the cutoffs against
-the official PHP security release when its affected and fixed versions are
-published. Headers can be hidden or changed, and distribution backports may
-not change the upstream version. `UNKNOWN` does not mean the target is patched.
+`OK` is a version comparison based on the assumption that subsequent stable patches in each listed branch contain the fix.
+It does not independently verify a security fix. Check the versions against
+the official PHP security release. Headers can be hidden or changed, and distribution backports may
+not change the upstream version. `UNKNOWN` does not mean the target is patched!
 
 ## Contributing
 
