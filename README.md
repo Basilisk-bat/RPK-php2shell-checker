@@ -1,4 +1,4 @@
-# PHP Security Version Checker
+# PHP Version Checker
 
 Check a website or local PHP version without exploit requests. Uses Node.js. No packages to install.
 
