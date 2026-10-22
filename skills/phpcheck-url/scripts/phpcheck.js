@@ -1,27 +1,22 @@
 #!/usr/bin/env node
-const { execFileSync } = require('node:child_process')
 const { parseArgs } = require('node:util')
 
 const VERSION = '1.0.0'
-// Vulnerable version cutoffs as of 2026-10-20. A newer stable patch in a
-// listed branch is OK by this table; unlisted branches remain unknown.
-const VULNERABLE_THROUGH = {
-  '5.4': 45, '5.5': 38, '5.6': 40,
-  '7.0': 33, '7.1': 33, '7.2': 34, '7.3': 33, '7.4': 33,
-  '8.0': 30, '8.1': 34, '8.2': 34, '8.3': 35, '8.4': 26, '8.5': 11,
-}
+// Official PHP releases fixing both CVEs, published 2026-10-21.
+const FIXED_IN = { '8.2': 35, '8.3': 36, '8.4': 27, '8.5': 12 }
+const OLDER_BRANCHES = new Set(['5.4', '5.5', '5.6', '7.0', '7.1', '7.2', '7.3', '7.4', '8.0', '8.1'])
 const USAGE = 'Usage: node phpcheck.js URL [--timeout SECONDS] [--json]\n' +
-  '       node phpcheck.js --local [--php PATH] [--json]\n' +
   '       node phpcheck.js --version'
 
-function patchStatus(version) {
+function versionStatus(version) {
   const match = /^(\d+)\.(\d+)\.(\d+)([-+~].*)?$/.exec(version || '')
   if (!match) return 'unknown'
-  const cutoff = VULNERABLE_THROUGH[`${Number(match[1])}.${Number(match[2])}`]
-  if (cutoff === undefined) return 'unknown'
-  if (Number(match[3]) <= cutoff) return 'vulnerable'
-  // A development build of the next patch is not evidence of a stable fix.
   if (/(?:^|[-+~.])(?:dev|alpha|beta|rc)/i.test(match[4] || '')) return 'unknown'
+  const branch = `${Number(match[1])}.${Number(match[2])}`
+  if (OLDER_BRANCHES.has(branch)) return 'potentially_vulnerable'
+  const fixed = FIXED_IN[branch]
+  if (fixed === undefined) return 'unknown'
+  if (Number(match[3]) < fixed) return 'potentially_vulnerable'
   return 'ok'
 }
 
@@ -48,8 +43,6 @@ async function main() {
     const args = parseArgs({
       allowPositionals: true,
       options: {
-        local: { type: 'boolean' },
-        php: { type: 'string', default: 'php' },
         timeout: { type: 'string', default: '10' },
         json: { type: 'boolean' },
         version: { type: 'boolean' },
@@ -60,11 +53,11 @@ async function main() {
     if (values.version) return console.log(VERSION)
     if (values.help) return console.log(USAGE)
     address = args.positionals[0]
-    if (args.positionals.length > 1 || (values.local && address) || (!values.local && !address)) {
-      throw new Error('Provide a URL or --local, not both')
+    if (args.positionals.length !== 1) {
+      throw new Error('Provide one URL')
     }
     timeout = Number(values.timeout)
-    if (!values.local && !(timeout > 0 && timeout <= 60)) throw new Error('--timeout must be greater than 0 and at most 60 seconds')
+    if (!(timeout > 0 && timeout <= 60)) throw new Error('--timeout must be greater than 0 and at most 60 seconds')
   } catch (error) {
     console.error(error.message + '\n' + USAGE)
     process.exitCode = 2
@@ -73,28 +66,33 @@ async function main() {
 
   let version = null, error = null, status = 'unknown'
   try {
-    const text = values.local
-      ? execFileSync(values.php, ['-v'], { encoding: 'utf8', timeout: 10000 })
-      : await urlHeaders(address, timeout)
-    // Local output includes copyright text and may include startup warnings.
-    const pattern = values.local ? /^PHP (\d[^\s,;)]*)/gm : /\bPHP[ /]([^\s,;)]+)/gi
-    for (const match of text.matchAll(pattern)) {
-      const candidateStatus = patchStatus(match[1])
-      // Do not let an OK banner hide a vulnerable or unrecognized PHP version.
-      if (version === null || candidateStatus === 'vulnerable' || status === 'ok') {
+    const text = await urlHeaders(address, timeout)
+    for (const match of text.matchAll(/\bPHP[ /]([^\s,;)]+)/gi)) {
+      const candidateStatus = versionStatus(match[1])
+      // Prefer warnings and unrecognized versions over a reassuring banner.
+      if (version === null || candidateStatus === 'potentially_vulnerable' || status === 'ok') {
         version = match[1]
         status = candidateStatus
       }
-      if (status === 'vulnerable') break
+      if (status === 'potentially_vulnerable') break
     }
   } catch (exc) {
     error = exc.message
   }
 
-  const code = { ok: 0, vulnerable: 1, unknown: 3 }[status]
-  const reason = error || (version ? 'PHP ' + version : 'PHP version not found')
-  const report = { patch_status: status, php_version: version, reason, exit_code: code }
-  console.log(values.json ? JSON.stringify(report) : status.toUpperCase() + ': ' + reason)
+  let result = { patch_status: 'unknown', reason: error || 'PHP version not found' }
+  if (version && !error) {
+    result = {
+      patch_status: status,
+      reason: status === 'ok'
+        ? `PHP ${version}: advertised version meets an upstream fixed release. Installed build not verified.`
+        : `PHP ${version}: ${status === 'potentially_vulnerable' ? 'Potentially vulnerable. ' : ''}` +
+          'HTTP headers cannot tell whether this version contains a backported fix.',
+    }
+  }
+  const code = { ok: 0, potentially_vulnerable: 1, unknown: 3 }[result.patch_status]
+  const report = { ...result, php_version: version, exit_code: code }
+  console.log(values.json ? JSON.stringify(report) : result.patch_status.replace('_', ' ').toUpperCase() + ': ' + result.reason)
   process.exitCode = code
 }
 

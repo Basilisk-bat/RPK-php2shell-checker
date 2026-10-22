@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict')
 const { spawn } = require('node:child_process')
 const { once } = require('node:events')
-const { cp, mkdtemp, rm, writeFile } = require('node:fs/promises')
+const { cp, mkdtemp, rm } = require('node:fs/promises')
 const http = require('node:http')
 const { tmpdir } = require('node:os')
 const path = require('node:path')
@@ -30,7 +30,7 @@ async function serve(t, handler) {
 }
 
 function check(result, status, version) {
-  const code = { ok: 0, vulnerable: 1, unknown: 3 }[status]
+  const code = { ok: 0, potentially_vulnerable: 1, unknown: 3 }[status]
   assert.equal(result.stderr, '')
   assert.equal(result.code, code, result.stdout)
   const report = JSON.parse(result.stdout)
@@ -40,45 +40,8 @@ function check(result, status, version) {
   return report
 }
 
-async function runLocal(t, output) {
-  const directory = await mkdtemp(path.join(tmpdir(), 'phpcheck-local-'))
-  t.after(() => rm(directory, { recursive: true, force: true }))
-  const php = path.join(directory, 'php')
-  await writeFile(php, `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(output)})\n`, { mode: 0o755 })
-  return run(['--local', '--php', php, '--json'])
-}
-
-for (const [version, status] of [
-  ['8.4.26', 'vulnerable'],
-  ['8.4.27', 'ok'],
-  ['8.4.27-1+ubuntu24.04.1+deb.sury.org+1', 'ok'],
-  ['8.4.27RC1', 'unknown'],
-  ['9.0.0', 'unknown'],
-]) {
-  test(`local PHP ${version} with copyright line => ${status}`, async t => {
-    const output = `PHP ${version} (cli) (NTS)\nCopyright (c) The PHP Group\nZend Engine v4.4.27\n`
-    check(await runLocal(t, output), status, version)
-  })
-}
-
-for (const warning of [
-  'Warning: PHP Startup: Unable to load dynamic library redis',
-  'Warning: Failed loading /usr/lib/php/20240924/redis.so',
-]) {
-  test(`local PHP ignores ${warning}`, async t => {
-    const output = `${warning}\nPHP 8.4.27 (cli) (NTS)\nCopyright (c) The PHP Group\n`
-    check(await runLocal(t, output), 'ok', '8.4.27')
-  })
-}
-
-test('local output without a version banner => unknown', async t => {
-  const output = 'PHP Warning: PHP Startup: Failed loading /usr/lib/php/20240924/redis.so\nCopyright (c) The PHP Group\n'
-  const report = check(await runLocal(t, output), 'unknown', null)
-  assert.equal(report.reason, 'PHP version not found')
-})
-
 for (const header of ['X-Powered-By', 'x-PoWeReD-bY', 'Server']) {
-  for (const [version, status] of [['8.4.26', 'vulnerable'], ['8.4.27', 'ok'], ['8.4.100', 'ok']]) {
+  for (const [version, status] of [['8.4.26', 'potentially_vulnerable'], ['8.4.27', 'ok'], ['8.4.100', 'ok']]) {
     test(`${header}: PHP/${version} => ${status}`, async t => {
       const methods = []
       const url = await serve(t, (req, res) => {
@@ -92,15 +55,16 @@ for (const header of ['X-Powered-By', 'x-PoWeReD-bY', 'Server']) {
   }
 }
 
-test('each configured branch has an inclusive vulnerable boundary and a newer OK version', async t => {
+test('URL checks warn below each upstream fix and accept the fixed version', async t => {
   // Explicit fixtures: these assert the CLI contract without importing its classifier.
-  const boundaries = ['5.4.45', '5.5.38', '5.6.40', '7.0.33', '7.1.33', '7.2.34', '7.3.33', '7.4.33',
-    '8.0.30', '8.1.34', '8.2.34', '8.3.35', '8.4.26', '8.5.11']
+  const boundaries = ['8.2.34', '8.3.35', '8.4.26', '8.5.11']
   let header
   const url = await serve(t, (req, res) => { res.setHeader('X-Powered-By', header); res.end() })
   for (const version of boundaries) {
     header = `PHP/${version}`
-    check(await run([url, '--json']), 'vulnerable', version)
+    const report = check(await run([url, '--json']), 'potentially_vulnerable', version)
+    assert.match(report.reason, /Potentially vulnerable/)
+    assert.match(report.reason, /HTTP headers cannot tell whether this version contains a backported fix/)
     const [major, minor, patch] = version.split('.').map(Number)
     const newer = `${major}.${minor}.${patch + 1}`
     header = `PHP/${newer}`
@@ -108,14 +72,25 @@ test('each configured branch has an inclusive vulnerable boundary and a newer OK
   }
 })
 
-for (const version of ['8.6.0', '9.0.0', '8.4', 'not-a-version', '8.4.27RC1', '8.4.27-rc1', '8.4.27~beta1']) {
+for (const version of ['5.4.45', '5.5.38', '5.6.40', '7.0.33', '7.1.33', '7.2.34', '7.3.33', '7.4.33', '8.0.30', '8.1.34', '8.1.35', '8.1.99']) {
+  test(`older branch PHP/${version} => potentially vulnerable regardless of patch number`, async t => {
+    const url = await serve(t, (req, res) => {
+      res.setHeader('X-Powered-By', `PHP/${version}`)
+      res.end()
+    })
+    const report = check(await run([url, '--json']), 'potentially_vulnerable', version)
+    assert.match(report.reason, /HTTP headers cannot tell whether this version contains a backported fix/)
+  })
+}
+
+for (const version of ['8.6.0', '9.0.0', '8.4', 'not-a-version', '8.4.27RC1', '8.4.27-rc1', '8.4.27~beta1', '8.1.35RC1', '8.1.35-dev']) {
   test(`unrecognized or prerelease PHP/${version} => unknown`, async t => {
     const url = await serve(t, (req, res) => { res.setHeader('X-Powered-By', `PHP/${version}`); res.end() })
     check(await run([url, '--json']), 'unknown', version)
   })
 }
 
-for (const [version, status] of [['8.4.26-1ubuntu1', 'vulnerable'], ['8.4.27-1ubuntu1', 'ok']]) {
+for (const [version, status] of [['8.4.26-1ubuntu1', 'potentially_vulnerable'], ['8.1.2-1ubuntu2.28', 'potentially_vulnerable'], ['8.4.27-1ubuntu1', 'ok']]) {
   test(`distribution suffix PHP/${version} => ${status}`, async t => {
     const url = await serve(t, (req, res) => { res.setHeader('X-Powered-By', `PHP/${version}`); res.end() })
     check(await run([url, '--json']), status, version)
@@ -167,8 +142,10 @@ for (const statusCode of [405, 501]) {
 }
 
 for (const [server, poweredBy, expectedVersion, status] of [
-  ['8.4.26', '8.4.27', '8.4.26', 'vulnerable'],
-  ['8.4.27', '8.4.26', '8.4.26', 'vulnerable'],
+  ['8.4.26', '8.4.27', '8.4.26', 'potentially_vulnerable'],
+  ['8.4.27', '8.4.26', '8.4.26', 'potentially_vulnerable'],
+  ['8.1.35', '8.4.27', '8.1.35', 'potentially_vulnerable'],
+  ['8.4.27', '8.1.35', '8.1.35', 'potentially_vulnerable'],
   ['9.0.0', '8.4.27', '9.0.0', 'unknown'],
   ['8.4.27', '9.0.0', '9.0.0', 'unknown'],
 ]) {
@@ -182,12 +159,23 @@ for (const [server, poweredBy, expectedVersion, status] of [
   })
 }
 
+test('plain text warning has exit code 1 and the backport caveat', async t => {
+  const url = await serve(t, (req, res) => {
+    res.setHeader('X-Powered-By', 'PHP/8.4.26')
+    res.end()
+  })
+  const result = await run([url])
+  assert.equal(result.stderr, '')
+  assert.equal(result.code, 1)
+  assert.equal(result.stdout, 'POTENTIALLY VULNERABLE: PHP 8.4.26: Potentially vulnerable. HTTP headers cannot tell whether this version contains a backported fix.\n')
+})
+
 test('plain text output for a newer version is OK with exit code 0', async t => {
   const url = await serve(t, (req, res) => { res.setHeader('X-Powered-By', 'PHP/8.4.27'); res.end() })
   const result = await run([url])
   assert.equal(result.stderr, '')
   assert.equal(result.code, 0)
-  assert.equal(result.stdout, 'OK: PHP 8.4.27\n')
+  assert.equal(result.stdout, 'OK: PHP 8.4.27: advertised version meets an upstream fixed release. Installed build not verified.\n')
 })
 
 test('the URL skill runs independently with its bundled checker', async t => {

@@ -1,6 +1,6 @@
 # PHP Version Checker
 
-Check a website or local PHP binary to see if it's vulnerable to php2shell.
+Get a version-based PHP2Shell warning from a website's PHP headers or local installation.
 
 To install both skills, ask Codex:
 
@@ -27,43 +27,32 @@ Check a website:
 node phpcheck.js "https://example.com"
 ```
 
-Check the local CLI PHP
-
-```sh
-node phpcheck.js --local
-```
-
 ## Results
 
 | Result | Exit code | Meaning |
 | --- | --- | --- |
-| `OK` | `0` | Stable PHP patch version above the embedded cutoff for a listed major/minor branch. |
-| `VULNERABLE` | `1` | PHP version at or below the embedded cutoff for that branch. |
-| `UNKNOWN` | `3` | No PHP version or response, an unrecognized version/branch, or a newer prerelease build. |
+| `OK` | `0` | Advertised version meets an upstream fixed release. |
+| `POTENTIALLY VULNERABLE` | `1` | Advertised version is in an affected range. |
+| `UNKNOWN` | `3` | Missing or unrecognized version, prerelease, or failed check. |
 
-Use `--json` for machine-readable output (`patch_status` is `ok`, `vulnerable`,
-or `unknown`). Invalid arguments exit with code `2`.
+Use `--json` for machine-readable output. `patch_status` is `ok`,
+`potentially_vulnerable` or `unknown`. Invalid arguments exit with code `2`.
 
-## Tests
+Versions below a listed upstream fix return `potentially_vulnerable` and
+exit `1`. PHP 5.4–5.6, 7.0–7.4, 8.0 and 8.1 also return this warning, even
+with a higher patch number such as 8.1.35.
 
-```sh
-node --test phpcheck.test.js
-```
+## URL checks
 
-Tests run the CLI against local HTTP servers and a fake PHP executable.
-No PHP installation or external website is required.
-
-## Limitations
-
-The checker only evaluates versions exposed in HTTP response headers or by
-`php -v`. It reads `X-Powered-By` and `Server`, sends `HEAD`, and falls back to
+URL mode reads `X-Powered-By` and `Server`, sends `HEAD`, and falls back to
 `GET` only when `HEAD` returns 405 or 501. It does not follow redirects or
 inspect response bodies. Missing or hidden PHP headers return `UNKNOWN`.
 
-`OK` is a version comparison based on the assumption that subsequent stable patches in each listed branch contain the fix.
-It does not independently verify a security fix. Check the versions against
-the official PHP security release. Headers can be hidden or changed, and distribution backports may
-not change the upstream version. `UNKNOWN` does not mean the target is patched!
+The upstream fixed releases are 8.2.35, 8.3.36, 8.4.27 and 8.5.12, from the
+[October 21 PHP advisory](https://www.php.net/archive/2026.php#2026-10-21-5).
+HTTP headers cannot tell whether the version contains a backported fix. Even `OK`
+only describes the advertised version - it doesn't verify the installation!
+The checker does not send exploit probes.
 
 ## Contributing
 
