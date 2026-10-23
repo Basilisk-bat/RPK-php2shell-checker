@@ -1,11 +1,12 @@
 # PHP Version Checker
 
-Get a version-based PHP2Shell warning from a website's PHP headers or local installation.
+Get a version-based PHP2Shell warning from a website's PHP headers. The server
+skill explains how to check the actual serving package when you have access.
 
 To install both skills, ask Codex:
 
 ```text
-$skill-installer install both skills from https://github.com/openai/php2shell-checker
+$skill-installer install both skills from https://github.com/Basilisk-bat/RPK-php2shell-checker
 ```
 
 Use [phpcheck-server](skills/phpcheck-server/SKILL.md) when you have server
@@ -26,6 +27,25 @@ Check a website:
 ```sh
 node phpcheck.js "https://example.com"
 ```
+
+For an owned site or a target you are authorized to test, compare its `HEAD`
+and `GET` responses at the same URL:
+
+```sh
+node phpcheck.js "https://example.com" --compare-methods --json
+```
+
+Each opt-in invocation sends a fresh `HEAD` and `GET` request to the supplied
+URL, even when `HEAD` succeeds; it does not retry automatically. The
+`--timeout` limit applies separately to each method. The JSON
+`evidence` lists each method, HTTP status, and numeric PHP versions found in
+`Server` or `X-Powered-By`; it flags conflicting versions and incomplete
+comparisons. It does not include the target URL, full header values, or response
+bodies. Build suffixes are omitted from evidence. Both methods must return a
+successful response with the same fixed PHP version for `OK`. A conflict or
+failed request prevents `OK` unless another banner already warrants a
+`POTENTIALLY VULNERABLE` warning. These are header observations, not proof of
+the serving build or exploitability.
 
 ## Results
 
@@ -56,9 +76,8 @@ The checker does not send exploit probes.
 
 ## Contributing
 
-OpenAI is not accepting external code contributions to this project. Bug
-reports and non-code feedback are welcome through GitHub issues. See
-[CONTRIBUTING.md](CONTRIBUTING.md).
+This is an RPK fork of [OpenAI's php2shell-checker](https://github.com/openai/php2shell-checker).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for this fork's contribution guidance.
 
 ## License
 

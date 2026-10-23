@@ -9,6 +9,15 @@ From this skill's directory, run:
 node scripts/phpcheck.js "https://example.com" --json
 ```
 
+On an owned or explicitly authorized site, use `--compare-methods --json` to
+send `HEAD` and `GET` to the same URL and inspect each response's status and
+PHP version tokens. The comparison does not follow redirects or read bodies.
+It reports only selected header names and numeric PHP versions, not the URL
+or full headers. Both methods need successful responses advertising the same
+fixed PHP version for `ok`. Treat conflicting banners or an incomplete
+comparison as unknown unless a banner already warrants a
+`potentially_vulnerable` warning.
+
 Use HTTPS for a bare hostname. The checker reads `Server` and `X-Powered-By`
 headers. If the version is hidden, report unknown.
 

@@ -5,7 +5,7 @@ const VERSION = '1.0.0'
 // Official PHP releases fixing both CVEs, published 2026-10-21.
 const FIXED_IN = { '8.2': 35, '8.3': 36, '8.4': 27, '8.5': 12 }
 const OLDER_BRANCHES = new Set(['5.4', '5.5', '5.6', '7.0', '7.1', '7.2', '7.3', '7.4', '8.0', '8.1'])
-const USAGE = 'Usage: node phpcheck.js URL [--timeout SECONDS] [--json]\n' +
+const USAGE = 'Usage: node phpcheck.js URL [--timeout SECONDS] [--json] [--compare-methods]\n' +
   '       node phpcheck.js --version'
 
 function versionStatus(version) {
@@ -20,11 +20,16 @@ function versionStatus(version) {
   return 'ok'
 }
 
-async function urlHeaders(address, timeout) {
+function checkedUrl(address) {
   if (/[\x00-\x20\x7f]/.test(address)) throw new Error('URL contains spaces or control characters')
   const url = new URL(address)
   if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Use an http:// or https:// URL')
   if (url.username || url.password || url.hash) throw new Error('URL credentials and fragments are not supported')
+  return url
+}
+
+async function urlHeaders(address, timeout) {
+  const url = checkedUrl(address)
   const headers = []
   for (const method of ['HEAD', 'GET']) {
     const response = await fetch(url, {
@@ -37,6 +42,80 @@ async function urlHeaders(address, timeout) {
   return headers.join('\n')
 }
 
+// Report only numeric versions. A server controls header values, including
+// build suffixes, so the evidence mode must not echo those suffixes.
+function safeVersion(token) {
+  const match = /^(\d{1,4}\.\d{1,4}\.\d{1,4})(?:[-+~][A-Za-z0-9.+~_-]{1,64})?$/.exec(token)
+  return match ? match[1] : null
+}
+
+function headerCandidates(response) {
+  const candidates = []
+  for (const header of ['server', 'x-powered-by']) {
+    for (const match of (response.headers.get(header) || '').matchAll(/\bPHP[ /]([^\s,;)]+)/gi)) {
+      const phpVersion = safeVersion(match[1])
+      candidates.push({ header, php_version: phpVersion, patch_status: phpVersion ? versionStatus(match[1]) : 'unknown' })
+    }
+  }
+  return candidates
+}
+
+async function compareMethods(address, timeout) {
+  const url = checkedUrl(address)
+  const observations = []
+  for (const method of ['HEAD', 'GET']) {
+    try {
+      const response = await fetch(url, {
+        method, redirect: 'manual', signal: AbortSignal.timeout(Math.ceil(timeout * 1000)),
+      })
+      const candidates = headerCandidates(response)
+      await response.body?.cancel()
+      observations.push({ method, http_status: response.status, candidates })
+    } catch (error) {
+      observations.push({ method, error: error?.name === 'TimeoutError' ? 'timeout' : 'request_failed' })
+    }
+  }
+
+  const candidates = observations.flatMap(observation => observation.candidates || [])
+  const versions = [...new Set(candidates.map(candidate => candidate.php_version).filter(Boolean))]
+  const conflictingVersions = versions.length > 1
+  const comparisonComplete = observations.every(observation => !observation.error)
+  const warning = candidates.find(candidate => candidate.patch_status === 'potentially_vulnerable')
+  const unknown = candidates.some(candidate => candidate.patch_status === 'unknown')
+  const bothMethodsHave2xxCandidates = observations.every(observation =>
+    observation.http_status >= 200 && observation.http_status < 300 && observation.candidates?.length)
+  const evidenceSufficientForOk = Boolean(bothMethodsHave2xxCandidates && !warning && !unknown && !conflictingVersions)
+  let patchStatus = 'unknown', phpVersion = null, reason = 'PHP version not found in either response'
+  if (warning) {
+    patchStatus = 'potentially_vulnerable'
+    phpVersion = warning.php_version
+    reason = 'An advertised PHP version is below an upstream fix or on an older branch. Vendor backports and the serving build are unverified.'
+  } else if (evidenceSufficientForOk) {
+    patchStatus = 'ok'
+    phpVersion = versions[0]
+    reason = 'Both responses advertise an upstream fixed PHP version. The installed and serving builds are unverified.'
+  } else if (conflictingVersions) {
+    reason = 'Responses advertise different PHP versions; identify the serving build before deciding patch status.'
+  } else if (!comparisonComplete) {
+    reason = 'The method comparison was incomplete; identify the serving build before deciding patch status.'
+  } else if (unknown) {
+    reason = 'A PHP banner could not be classified; identify the serving build before deciding patch status.'
+  } else if (!bothMethodsHave2xxCandidates) {
+    reason = 'Both methods did not provide a successful response with a PHP banner; identify the serving build before deciding patch status.'
+  }
+  if (conflictingVersions && warning) reason += ' Responses also advertise different PHP versions.'
+  const exitCode = { ok: 0, potentially_vulnerable: 1, unknown: 3 }[patchStatus]
+  return {
+    patch_status: patchStatus, reason, php_version: phpVersion, exit_code: exitCode,
+    evidence: {
+      mode: 'compare_methods', observed_at: new Date().toISOString(),
+      comparison_complete: comparisonComplete, evidence_sufficient_for_ok: evidenceSufficientForOk,
+      conflicting_versions: conflictingVersions,
+      observations,
+    },
+  }
+}
+
 async function main() {
   let values, address, timeout
   try {
@@ -45,6 +124,7 @@ async function main() {
       options: {
         timeout: { type: 'string', default: '10' },
         json: { type: 'boolean' },
+        'compare-methods': { type: 'boolean' },
         version: { type: 'boolean' },
         help: { type: 'boolean', short: 'h' },
       },
@@ -58,9 +138,24 @@ async function main() {
     }
     timeout = Number(values.timeout)
     if (!(timeout > 0 && timeout <= 60)) throw new Error('--timeout must be greater than 0 and at most 60 seconds')
+    if (values['compare-methods'] && !values.json) throw new Error('--compare-methods requires --json')
   } catch (error) {
     console.error(error.message + '\n' + USAGE)
     process.exitCode = 2
+    return
+  }
+
+  if (values['compare-methods']) {
+    try {
+      const report = await compareMethods(address, timeout)
+      console.log(JSON.stringify(report))
+      process.exitCode = report.exit_code
+    } catch (error) {
+      console.log(JSON.stringify({
+        patch_status: 'unknown', reason: error.message, php_version: null, exit_code: 3,
+      }))
+      process.exitCode = 3
+    }
     return
   }
 
