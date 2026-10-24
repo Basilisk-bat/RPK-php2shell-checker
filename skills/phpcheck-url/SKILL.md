@@ -9,6 +9,10 @@ From this skill's directory, run:
 node scripts/phpcheck.js "https://example.com" --json
 ```
 
+Ordinary URL checks send only `HEAD`. If the server returns 405 or 501, report
+`unknown` without sending `GET` or accepting a version banner from that failed
+method as evidence of a fixed serving build.
+
 On an owned or explicitly authorized site, use `--compare-methods --json` to
 send `HEAD` and `GET` to the same URL and inspect each response's status and
 PHP version tokens. The comparison does not follow redirects or read bodies.

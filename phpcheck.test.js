@@ -134,16 +134,23 @@ test('a response timeout => unknown', async t => {
 })
 
 for (const statusCode of [405, 501]) {
-  test(`HEAD ${statusCode} falls back to GET and reads PHP headers`, async t => {
+  test(`HEAD ${statusCode} stays unknown without an implicit GET`, async t => {
     const methods = []
     const url = await serve(t, (req, res) => {
       methods.push(req.method)
-      if (req.method === 'HEAD') res.writeHead(statusCode)
-      else res.setHeader('X-Powered-By', 'PHP/8.4.27')
+      if (req.method === 'HEAD') res.statusCode = statusCode
+      res.setHeader('X-Powered-By', 'PHP/8.4.27')
       res.end()
     })
-    check(await run([url, '--json']), 'ok', '8.4.27')
+    const ordinary = check(await run([url, '--json']), 'unknown', null)
+    assert.equal(ordinary.reason, `HEAD request was not supported (HTTP ${statusCode}); no GET request was sent`)
+    assert.deepEqual(methods, ['HEAD'])
+
+    methods.length = 0
+    const comparison = check(await run([url, '--compare-methods', '--json']), 'unknown', null)
     assert.deepEqual(methods, ['HEAD', 'GET'])
+    assert.deepEqual(comparison.evidence.observations.map(o => o.http_status), [statusCode, 200])
+    assert.equal(comparison.evidence.evidence_sufficient_for_ok, false)
   })
 }
 
@@ -189,13 +196,21 @@ test('the URL skill runs independently with its bundled checker', async t => {
   t.after(() => rm(directory, { recursive: true, force: true }))
   await cp(path.join(__dirname, 'skills/phpcheck-url'), directory, { recursive: true })
   const methods = []
+  let headStatus = 200
   const url = await serve(t, (req, res) => {
     methods.push(req.method)
+    if (req.method === 'HEAD') res.statusCode = headStatus
     res.setHeader('X-Powered-By', 'PHP/8.4.27')
     res.end()
   })
-  const result = await run([url, '--json'], path.join(directory, 'scripts/phpcheck.js'))
+  const script = path.join(directory, 'scripts/phpcheck.js')
+  const result = await run([url, '--json'], script)
   check(result, 'ok', '8.4.27')
+  assert.deepEqual(methods, ['HEAD'])
+
+  methods.length = 0
+  headStatus = 405
+  check(await run([url, '--json'], script), 'unknown', null)
   assert.deepEqual(methods, ['HEAD'])
 })
 

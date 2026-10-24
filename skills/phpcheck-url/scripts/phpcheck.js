@@ -30,16 +30,14 @@ function checkedUrl(address) {
 
 async function urlHeaders(address, timeout) {
   const url = checkedUrl(address)
-  const headers = []
-  for (const method of ['HEAD', 'GET']) {
-    const response = await fetch(url, {
-      method, redirect: 'manual', signal: AbortSignal.timeout(Math.ceil(timeout * 1000)),
-    })
-    headers.push(response.headers.get('server') || '', response.headers.get('x-powered-by') || '')
-    await response.body?.cancel()
-    if (![405, 501].includes(response.status)) break
+  const response = await fetch(url, {
+    method: 'HEAD', redirect: 'manual', signal: AbortSignal.timeout(Math.ceil(timeout * 1000)),
+  })
+  await response.body?.cancel()
+  if ([405, 501].includes(response.status)) {
+    throw new Error(`HEAD request was not supported (HTTP ${response.status}); no GET request was sent`)
   }
-  return headers.join('\n')
+  return [response.headers.get('server') || '', response.headers.get('x-powered-by') || ''].join('\n')
 }
 
 // Report only numeric versions. A server controls header values, including
