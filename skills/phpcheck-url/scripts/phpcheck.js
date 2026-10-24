@@ -6,7 +6,8 @@ const VERSION = '1.0.0'
 const FIXED_IN = { '8.2': 35, '8.3': 36, '8.4': 27, '8.5': 12 }
 const OLDER_BRANCHES = new Set(['5.4', '5.5', '5.6', '7.0', '7.1', '7.2', '7.3', '7.4', '8.0', '8.1'])
 const USAGE = 'Usage: node phpcheck.js URL [--timeout SECONDS] [--json] [--compare-methods]\n' +
-  '       node phpcheck.js --version'
+  '       node phpcheck.js --version\n' +
+  'Check only an owned or explicitly authorized target; ordinary mode sends HEAD, comparison adds GET.'
 
 function versionStatus(version) {
   // Keep the ordinary URL verdict within the same bounded version grammar used
@@ -33,6 +34,10 @@ function checkedUrl(address) {
   return url
 }
 
+function isSuccessfulStatus(status) {
+  return status >= 200 && status < 300
+}
+
 async function urlHeaders(address, timeout) {
   const url = checkedUrl(address)
   const response = await fetch(url, {
@@ -42,7 +47,7 @@ async function urlHeaders(address, timeout) {
   if ([405, 501].includes(response.status)) {
     throw new Error(`HEAD request was not supported (HTTP ${response.status}); no GET request was sent`)
   }
-  if (response.status < 200 || response.status >= 300) {
+  if (!isSuccessfulStatus(response.status)) {
     throw new Error(`HEAD request did not return a successful response (HTTP ${response.status}); no GET request was sent`)
   }
   return [response.headers.get('server') || '', response.headers.get('x-powered-by') || ''].join('\n')
@@ -60,7 +65,10 @@ function headerCandidates(response) {
   for (const header of ['server', 'x-powered-by']) {
     for (const match of (response.headers.get(header) || '').matchAll(/\bPHP[ /]([^\s,;)]+)/gi)) {
       const phpVersion = safeVersion(match[1])
-      candidates.push({ header, php_version: phpVersion, patch_status: phpVersion ? versionStatus(match[1]) : 'unknown' })
+      candidates.push({
+        header, php_version: phpVersion,
+        patch_status: phpVersion && isSuccessfulStatus(response.status) ? versionStatus(match[1]) : 'unknown',
+      })
     }
   }
   return candidates
@@ -83,13 +91,20 @@ async function compareMethods(address, timeout) {
   }
 
   const candidates = observations.flatMap(observation => observation.candidates || [])
+  // Non-2xx banners remain visible as evidence, but cannot determine the
+  // top-level version verdict for the requested URL.
+  const verdictCandidates = observations
+    .filter(observation => isSuccessfulStatus(observation.http_status))
+    .flatMap(observation => observation.candidates || [])
   const versions = [...new Set(candidates.map(candidate => candidate.php_version).filter(Boolean))]
   const conflictingVersions = versions.length > 1
   const comparisonComplete = observations.every(observation => !observation.error)
-  const warning = candidates.find(candidate => candidate.patch_status === 'potentially_vulnerable')
-  const unknown = candidates.some(candidate => candidate.patch_status === 'unknown')
+  const warning = verdictCandidates.find(candidate => candidate.patch_status === 'potentially_vulnerable')
+  const unknown = verdictCandidates.some(candidate => candidate.patch_status === 'unknown')
   const bothMethodsHave2xxCandidates = observations.every(observation =>
-    observation.http_status >= 200 && observation.http_status < 300 && observation.candidates?.length)
+    isSuccessfulStatus(observation.http_status) && observation.candidates?.length)
+  const non2xxBanner = observations.some(observation =>
+    !isSuccessfulStatus(observation.http_status) && observation.candidates?.length)
   const evidenceSufficientForOk = Boolean(bothMethodsHave2xxCandidates && !warning && !unknown && !conflictingVersions)
   let patchStatus = 'unknown', phpVersion = null, reason = 'PHP version not found in either response'
   if (warning) {
@@ -110,6 +125,7 @@ async function compareMethods(address, timeout) {
     reason = 'Both methods did not provide a successful response with a PHP banner; identify the serving build before deciding patch status.'
   }
   if (conflictingVersions && warning) reason += ' Responses also advertise different PHP versions.'
+  if (patchStatus === 'unknown' && non2xxBanner) reason += ' PHP banners on non-2xx responses are evidence only.'
   const exitCode = { ok: 0, potentially_vulnerable: 1, unknown: 3 }[patchStatus]
   return {
     patch_status: patchStatus, serving_patch_status: 'unknown',

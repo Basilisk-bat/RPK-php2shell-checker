@@ -3,6 +3,9 @@ name: phpcheck-url
 description: Check the advertised PHP version from a URL or hostname.
 ---
 
+Use only on a site you own or are explicitly authorized to check. Ordinary
+mode sends a `HEAD` request; opt-in comparison also sends `GET`.
+
 From this skill's directory, run:
 
 ```sh
@@ -14,14 +17,16 @@ or error page) returns `unknown` without sending `GET` or classifying its PHP
 banner. HTTP 405 and 501 retain a specific "HEAD request was not supported"
 reason.
 
-On an owned or explicitly authorized site, use `--compare-methods --json` to
-send `HEAD` and `GET` to the same URL and inspect each response's status and
+On that authorized site, use `--compare-methods --json` to send `HEAD` and
+`GET` to the same URL and inspect each response's status and
 PHP version tokens. The comparison does not follow redirects or read bodies.
 It reports only selected header names and numeric PHP versions, not the URL
 or full headers. Both methods need successful responses advertising the same
-fixed PHP version for `ok`. Treat conflicting banners or an incomplete
-comparison as unknown unless a banner already warrants a
-`potentially_vulnerable` warning.
+fixed PHP version for `ok`. Non-2xx statuses and sanitized PHP banners remain
+in the evidence with candidate `patch_status: unknown`; only 2xx banners can
+determine a version-based verdict.
+Treat conflicting banners or an incomplete comparison as unknown unless a
+2xx banner already warrants a `potentially_vulnerable` warning.
 
 Use HTTPS for a bare hostname. The checker reads `Server` and `X-Powered-By`
 headers. If the version is hidden, report unknown.

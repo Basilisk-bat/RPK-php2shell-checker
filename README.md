@@ -22,14 +22,16 @@ $phpcheck-server check the PHP version serving my site
 
 ## Run directly
 
+Use these commands only for a site you own or are explicitly authorized to
+check. Ordinary mode sends a `HEAD` request; comparison mode also sends `GET`.
+
 Check a website:
 
 ```sh
 node phpcheck.js "https://example.com"
 ```
 
-For an owned site or a target you are authorized to test, compare its `HEAD`
-and `GET` responses at the same URL:
+For that authorized site, compare its `HEAD` and `GET` responses at the same URL:
 
 ```sh
 node phpcheck.js "https://example.com" --compare-methods --json
@@ -42,10 +44,14 @@ URL, even when `HEAD` succeeds; it does not retry automatically. The
 `Server` or `X-Powered-By`; it flags conflicting versions and incomplete
 comparisons. It does not include the target URL, full header values, or response
 bodies. Build suffixes are omitted from evidence. Both methods must return a
-successful response with the same fixed PHP version for `OK`. A conflict or
-failed request prevents `OK` unless another banner already warrants a
-`POTENTIALLY VULNERABLE` warning. These are header observations, not proof of
-the serving build or exploitability.
+successful response with the same fixed PHP version for `OK`. Only banners
+from successful 2xx responses can set the version-based verdict. Non-2xx
+statuses and banners remain in the evidence. Their candidate `patch_status`
+is `unknown`, and they cannot produce a warning by themselves. A conflict or
+failed request prevents `OK`, while a below-fix
+banner on a 2xx response can still warrant a `POTENTIALLY VULNERABLE`
+warning. These are header observations, not proof of the serving build or
+exploitability.
 
 ## Results
 
@@ -74,9 +80,10 @@ the final security fix.
 Ordinary URL mode reads `X-Powered-By` and `Server` from a `HEAD` response. It
 does not send `GET`, follow redirects, or inspect response bodies. A non-2xx
 `HEAD` response returns `UNKNOWN`, even when it advertises a PHP version; 405
-and 501 retain a specific "HEAD request was not supported" reason. An authorized
-`--compare-methods --json` check explicitly sends both methods. Missing or
-hidden PHP headers also return `UNKNOWN`.
+and 501 retain a specific "HEAD request was not supported" reason. On an
+authorized target, `--compare-methods --json` explicitly sends both methods.
+Non-2xx banners remain visible in comparison evidence but do not determine
+the top-level verdict. Missing or hidden PHP headers also return `UNKNOWN`.
 
 The upstream fixed releases are 8.2.35, 8.3.36, 8.4.27 and 8.5.12, from the
 [October 21 PHP advisory](https://www.php.net/archive/2026.php#2026-10-21-5).

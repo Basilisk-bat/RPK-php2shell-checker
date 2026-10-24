@@ -327,6 +327,60 @@ test('a fixed banner on GET alone does not establish an OK comparison', async t 
   assert.equal(result.evidence.evidence_sufficient_for_ok, false)
 })
 
+test('a redirect warning banner remains evidence when GET advertises a fixed version', async t => {
+  const methods = []
+  const url = await serve(t, (req, res) => {
+    methods.push(req.method)
+    if (req.method === 'HEAD') {
+      res.statusCode = 302
+      res.setHeader('Location', 'http://127.0.0.1:1/not-followed')
+      res.setHeader('X-Powered-By', 'PHP/8.4.26')
+    } else {
+      res.setHeader('X-Powered-By', 'PHP/8.4.27')
+    }
+    res.end()
+  })
+  const result = check(await run([url, '--compare-methods', '--json']), 'unknown', null)
+  assert.deepEqual(methods, ['HEAD', 'GET'])
+  assert.deepEqual(result.evidence.observations.map(o => o.http_status), [302, 200])
+  assert.deepEqual(result.evidence.observations.map(o => o.candidates[0].php_version), ['8.4.26', '8.4.27'])
+  assert.deepEqual(result.evidence.observations.map(o => o.candidates[0].patch_status), ['unknown', 'ok'])
+  assert.equal(result.evidence.conflicting_versions, true)
+  assert.equal(result.evidence.evidence_sufficient_for_ok, false)
+  assert.match(result.reason, /non-2xx responses are evidence only/)
+})
+
+test('non-2xx-only warning banners remain evidence without a verdict', async t => {
+  const url = await serve(t, (req, res) => {
+    res.statusCode = req.method === 'HEAD' ? 503 : 404
+    res.setHeader('X-Powered-By', 'PHP/8.4.26')
+    res.end()
+  })
+  const result = check(await run([url, '--compare-methods', '--json']), 'unknown', null)
+  assert.deepEqual(result.evidence.observations.map(o => o.http_status), [503, 404])
+  assert.deepEqual(result.evidence.observations.map(o => o.candidates[0].php_version), ['8.4.26', '8.4.26'])
+  assert.deepEqual(result.evidence.observations.map(o => o.candidates[0].patch_status), ['unknown', 'unknown'])
+  assert.equal(result.evidence.evidence_sufficient_for_ok, false)
+  assert.match(result.reason, /non-2xx responses are evidence only/)
+})
+
+test('a successful GET warning still determines the verdict beside a redirect', async t => {
+  const url = await serve(t, (req, res) => {
+    if (req.method === 'HEAD') {
+      res.statusCode = 302
+      res.setHeader('X-Powered-By', 'PHP/8.4.27')
+    } else {
+      res.setHeader('X-Powered-By', 'PHP/8.4.26')
+    }
+    res.end()
+  })
+  const result = check(await run([url, '--compare-methods', '--json']), 'potentially_vulnerable', '8.4.26')
+  assert.deepEqual(result.evidence.observations.map(o => o.http_status), [302, 200])
+  assert.deepEqual(result.evidence.observations.map(o => o.candidates[0].patch_status), ['unknown', 'potentially_vulnerable'])
+  assert.equal(result.evidence.conflicting_versions, true)
+  assert.equal(result.evidence.evidence_sufficient_for_ok, false)
+})
+
 test('redirect banners do not establish an OK comparison', async t => {
   const url = await serve(t, (req, res) => {
     res.statusCode = 302
