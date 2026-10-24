@@ -365,14 +365,34 @@ test('comparison keeps prerelease versions unknown after stripping their suffix'
 
 test('oversized numeric banners cannot become OK or enter the report', async t => {
   const patch = '9'.repeat(3000)
+  let header = `PHP/8.4.${patch}`
+  let alsoAdvertiseFixed = false
+  const methods = []
   const url = await serve(t, (req, res) => {
-    res.setHeader('X-Powered-By', `PHP/8.4.${patch}`)
+    methods.push(req.method)
+    res.setHeader('Server', header)
+    if (alsoAdvertiseFixed) res.setHeader('X-Powered-By', 'PHP/8.4.27')
     res.end()
   })
+  const ordinary = check(await run([url, '--json']), 'unknown', null)
+  assert.equal(ordinary.reason, 'PHP banner could not be classified.')
+  assert.doesNotMatch(JSON.stringify(ordinary), /9{100}/)
+  assert.deepEqual(methods, ['HEAD'])
+
   const result = check(await run([url, '--compare-methods', '--json']), 'unknown', null)
   assert.equal(result.evidence.observations[0].candidates[0].php_version, null)
   assert.equal(result.evidence.evidence_sufficient_for_ok, false)
   assert.doesNotMatch(JSON.stringify(result), /9{100}/)
+
+  alsoAdvertiseFixed = true
+  const mixed = check(await run([url, '--json']), 'unknown', null)
+  assert.doesNotMatch(JSON.stringify(mixed), /9{100}/)
+
+  header = 'PHP/8.4.27'
+  alsoAdvertiseFixed = false
+  methods.length = 0
+  check(await run([url, '--json']), 'ok', '8.4.27')
+  assert.deepEqual(methods, ['HEAD'])
 })
 
 test('zero-padded PHP banners cannot produce an OK result', async t => {

@@ -9,6 +9,9 @@ const USAGE = 'Usage: node phpcheck.js URL [--timeout SECONDS] [--json] [--compa
   '       node phpcheck.js --version'
 
 function versionStatus(version) {
+  // Keep the ordinary URL verdict within the same bounded version grammar used
+  // for comparison evidence. Unbounded digits can become Infinity in Number().
+  if (!safeVersion(version)) return 'unknown'
   const match = /^((?:0|[1-9]\d*))\.((?:0|[1-9]\d*))\.((?:0|[1-9]\d*))([-+~].*)?$/.exec(version || '')
   if (!match) return 'unknown'
   if (/(?:^|[-+~.])(?:dev|alpha|beta|rc)/i.test(match[4] || '')) return 'unknown'
@@ -162,15 +165,18 @@ async function main() {
     return
   }
 
-  let version = null, error = null, status = 'unknown'
+  let version = null, seenCandidate = false, error = null, status = 'unknown'
   try {
     const text = await urlHeaders(address, timeout)
     for (const match of text.matchAll(/\bPHP[ /]([^\s,;)]+)/gi)) {
       const candidateStatus = versionStatus(match[1])
+      // Keep unbounded, target-controlled banner tokens out of reports.
+      const candidateVersion = match[1].length <= 80 ? match[1] : null
       // Prefer warnings and unrecognized versions over a reassuring banner.
-      if (version === null || candidateStatus === 'potentially_vulnerable' || status === 'ok') {
-        version = match[1]
+      if (!seenCandidate || candidateStatus === 'potentially_vulnerable' || status === 'ok') {
+        version = candidateVersion
         status = candidateStatus
+        seenCandidate = true
       }
       if (status === 'potentially_vulnerable') break
     }
@@ -179,7 +185,9 @@ async function main() {
   }
 
   let result = { patch_status: 'unknown', reason: error || 'PHP version not found' }
-  if (version && !error) {
+  if (seenCandidate && !version && !error) {
+    result = { patch_status: 'unknown', reason: 'PHP banner could not be classified.' }
+  } else if (version && !error) {
     result = {
       patch_status: status,
       reason: status === 'ok'
