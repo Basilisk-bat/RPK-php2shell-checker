@@ -552,7 +552,7 @@ test('zero-padded PHP banners cannot produce an OK result', async t => {
     { header: 'x-powered-by', php_version: null, patch_status: 'unknown' },
     { header: 'x-powered-by', php_version: null, patch_status: 'unknown' },
   ])
-  check(await run([url, '--json']), 'unknown', '0008.0004.0027')
+  check(await run([url, '--json']), 'unknown', null)
 })
 
 test('comparison requires JSON before sending requests', async t => {
