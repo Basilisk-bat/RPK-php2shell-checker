@@ -35,6 +35,7 @@ function check(result, status, version) {
   assert.equal(result.code, code, result.stdout)
   const report = JSON.parse(result.stdout)
   assert.equal(report.patch_status, status)
+  assert.equal(report.serving_patch_status, 'unknown')
   assert.equal(report.php_version, version)
   assert.equal(report.exit_code, code)
   return report
@@ -93,7 +94,12 @@ for (const version of ['8.6.0', '9.0.0', '8.4', 'not-a-version', '8.4.27RC1', '8
 for (const [version, status] of [['8.4.26-1ubuntu1', 'potentially_vulnerable'], ['8.1.2-1ubuntu2.28', 'potentially_vulnerable'], ['8.4.27-1ubuntu1', 'ok']]) {
   test(`distribution suffix PHP/${version} => ${status}`, async t => {
     const url = await serve(t, (req, res) => { res.setHeader('X-Powered-By', `PHP/${version}`); res.end() })
-    check(await run([url, '--json']), status, version)
+    const report = check(await run([url, '--json']), status, version)
+    if (version === '8.1.2-1ubuntu2.28') {
+      // This package revision is a known Ubuntu fix, but a header cannot bind it to the serving worker.
+      assert.match(report.reason, /backported fix/)
+      assert.equal(report.serving_patch_status, 'unknown')
+    }
   })
 }
 
@@ -328,4 +334,9 @@ test('comparison requires JSON before sending requests', async t => {
   assert.equal(result.code, 2)
   assert.match(result.stderr, /--compare-methods requires --json/)
   assert.deepEqual(methods, [])
+})
+
+test('comparison rejects a non-HTTP URL without implying a serving patch verdict', async () => {
+  const report = check(await run(['file:///not-a-target', '--compare-methods', '--json']), 'unknown', null)
+  assert.match(report.reason, /http:\/\/ or https:\/\//)
 })

@@ -51,12 +51,16 @@ the serving build or exploitability.
 
 | Result | Exit code | Meaning |
 | --- | --- | --- |
-| `OK` | `0` | Advertised version meets an upstream fixed release. |
-| `POTENTIALLY VULNERABLE` | `1` | Advertised version is in an affected range. |
+| `OK` | `0` | Advertised version meets an upstream fixed release; serving build is unverified. |
+| `POTENTIALLY VULNERABLE` | `1` | Advertised upstream version is below a fix or on an older branch; serving build is unverified. |
 | `UNKNOWN` | `3` | Missing or unrecognized version, prerelease, or failed check. |
 
 Use `--json` for machine-readable output. `patch_status` is `ok`,
-`potentially_vulnerable` or `unknown`. Invalid arguments exit with code `2`.
+`potentially_vulnerable` or `unknown`; it is a version-based URL check, not a
+deployed-build verdict.
+`serving_patch_status` is always `unknown`: headers cannot establish whether the
+running worker has a vendor backport, or even whether it matches the banner.
+Invalid arguments exit with code `2`.
 
 Versions below a listed upstream fix return `potentially_vulnerable` and
 exit `1`. PHP 5.4–5.6, 7.0–7.4, 8.0 and 8.1 also return this warning, even
@@ -72,6 +76,12 @@ The upstream fixed releases are 8.2.35, 8.3.36, 8.4.27 and 8.5.12, from the
 [October 21 PHP advisory](https://www.php.net/archive/2026.php#2026-10-21-5).
 HTTP headers cannot tell whether the version contains a backported fix. Even `OK`
 only describes the advertised version - it doesn't verify the installation!
+For example, an `8.1.2-1ubuntu2.28` banner still produces a version warning,
+although [Ubuntu's advisory](https://ubuntu.com/security/notices/USN-8948-1)
+lists that package revision as fixed for Ubuntu 22.04. The installed package
+and actual serving worker must be checked before applying that verdict.
+See [phpcheck-server](skills/phpcheck-server/SKILL.md) for that check. A header
+cannot authenticate the package revision or prove which build serves the URL.
 The checker does not send exploit probes.
 
 ## Contributing

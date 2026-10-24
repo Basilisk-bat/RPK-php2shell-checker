@@ -106,7 +106,8 @@ async function compareMethods(address, timeout) {
   if (conflictingVersions && warning) reason += ' Responses also advertise different PHP versions.'
   const exitCode = { ok: 0, potentially_vulnerable: 1, unknown: 3 }[patchStatus]
   return {
-    patch_status: patchStatus, reason, php_version: phpVersion, exit_code: exitCode,
+    patch_status: patchStatus, serving_patch_status: 'unknown',
+    reason, php_version: phpVersion, exit_code: exitCode,
     evidence: {
       mode: 'compare_methods', observed_at: new Date().toISOString(),
       comparison_complete: comparisonComplete, evidence_sufficient_for_ok: evidenceSufficientForOk,
@@ -152,7 +153,8 @@ async function main() {
       process.exitCode = report.exit_code
     } catch (error) {
       console.log(JSON.stringify({
-        patch_status: 'unknown', reason: error.message, php_version: null, exit_code: 3,
+        patch_status: 'unknown', serving_patch_status: 'unknown',
+        reason: error.message, php_version: null, exit_code: 3,
       }))
       process.exitCode = 3
     }
@@ -186,7 +188,7 @@ async function main() {
     }
   }
   const code = { ok: 0, potentially_vulnerable: 1, unknown: 3 }[result.patch_status]
-  const report = { ...result, php_version: version, exit_code: code }
+  const report = { ...result, serving_patch_status: 'unknown', php_version: version, exit_code: code }
   console.log(values.json ? JSON.stringify(report) : result.patch_status.replace('_', ' ').toUpperCase() + ': ' + result.reason)
   process.exitCode = code
 }

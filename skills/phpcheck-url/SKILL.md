@@ -30,6 +30,12 @@ is unpatched. HTTP headers cannot tell whether the version contains a
 backported fix. Describe the result as potentially vulnerable, never confirmed
 vulnerable.
 
+In JSON, `patch_status` is a version-based URL check and
+`serving_patch_status` remains `unknown` for every URL result. A vendor-looking
+suffix in a header does not authenticate the package or identify the serving
+worker. Check the actual serving package and vendor advisory before reporting
+deployment patch status.
+
 An `ok` result with exit code 0 means only that the advertised stable version
 meets an upstream fixed release: 8.2.35, 8.3.36, 8.4.27 or 8.5.12. The installed
 build is not verified. Missing or unrecognized versions, prereleases and failed
