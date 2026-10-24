@@ -327,6 +327,21 @@ test('oversized numeric banners cannot become OK or enter the report', async t =
   assert.doesNotMatch(JSON.stringify(result), /9{100}/)
 })
 
+test('zero-padded PHP banners cannot produce an OK result', async t => {
+  const url = await serve(t, (req, res) => {
+    res.setHeader('X-Powered-By', 'PHP/0008.0004.0027')
+    res.end()
+  })
+  const comparison = check(await run([url, '--compare-methods', '--json']), 'unknown', null)
+  assert.equal(comparison.evidence.comparison_complete, true)
+  assert.equal(comparison.evidence.evidence_sufficient_for_ok, false)
+  assert.deepEqual(comparison.evidence.observations.map(o => o.candidates[0]), [
+    { header: 'x-powered-by', php_version: null, patch_status: 'unknown' },
+    { header: 'x-powered-by', php_version: null, patch_status: 'unknown' },
+  ])
+  check(await run([url, '--json']), 'unknown', '0008.0004.0027')
+})
+
 test('comparison requires JSON before sending requests', async t => {
   const methods = []
   const url = await serve(t, (req, res) => { methods.push(req.method); res.end() })

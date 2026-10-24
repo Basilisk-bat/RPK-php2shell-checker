@@ -9,7 +9,7 @@ const USAGE = 'Usage: node phpcheck.js URL [--timeout SECONDS] [--json] [--compa
   '       node phpcheck.js --version'
 
 function versionStatus(version) {
-  const match = /^(\d+)\.(\d+)\.(\d+)([-+~].*)?$/.exec(version || '')
+  const match = /^((?:0|[1-9]\d*))\.((?:0|[1-9]\d*))\.((?:0|[1-9]\d*))([-+~].*)?$/.exec(version || '')
   if (!match) return 'unknown'
   if (/(?:^|[-+~.])(?:dev|alpha|beta|rc)/i.test(match[4] || '')) return 'unknown'
   const branch = `${Number(match[1])}.${Number(match[2])}`
@@ -45,7 +45,7 @@ async function urlHeaders(address, timeout) {
 // Report only numeric versions. A server controls header values, including
 // build suffixes, so the evidence mode must not echo those suffixes.
 function safeVersion(token) {
-  const match = /^(\d{1,4}\.\d{1,4}\.\d{1,4})(?:[-+~][A-Za-z0-9.+~_-]{1,64})?$/.exec(token)
+  const match = /^((?:0|[1-9]\d{0,3})\.(?:0|[1-9]\d{0,3})\.(?:0|[1-9]\d{0,3}))(?:[-+~][A-Za-z0-9.+~_-]{1,64})?$/.exec(token)
   return match ? match[1] : null
 }
 
