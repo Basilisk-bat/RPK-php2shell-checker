@@ -18,6 +18,35 @@ function run(args, script = path.join(__dirname, 'phpcheck.js')) {
   })
 }
 
+function runInjectedHead(header, args = ['--json']) {
+  const script = path.join(__dirname, 'skills/phpcheck-url/scripts/phpcheck.js')
+  const bootstrap = `
+    const script = ${JSON.stringify(script)}
+    const header = ${JSON.stringify(header)}
+    global.fetch = async (url, options) => {
+      if (url.href !== 'https://fixture.invalid/' || options.method !== 'HEAD' || options.redirect !== 'manual') {
+        throw new Error('Unexpected request')
+      }
+      return {
+        status: 200,
+        headers: { get: name => name === 'x-powered-by' ? header : null },
+        body: { cancel: async () => {} },
+      }
+    }
+    // node -e starts positional parsing at argv[1].
+    process.argv = [process.execPath, 'https://fixture.invalid/', ...${JSON.stringify(args)}]
+    require(script)
+  `
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['-e', bootstrap])
+    let stdout = '', stderr = ''
+    child.stdout.on('data', chunk => { stdout += chunk })
+    child.stderr.on('data', chunk => { stderr += chunk })
+    child.on('error', reject)
+    child.on('close', code => resolve({ code, stdout, stderr }))
+  })
+}
+
 async function serve(t, handler) {
   const server = http.createServer(handler)
   server.listen(0, '127.0.0.1')
@@ -35,6 +64,7 @@ function check(result, status, version) {
   assert.equal(result.code, code, result.stdout)
   const report = JSON.parse(result.stdout)
   assert.equal(report.patch_status, status)
+  assert.equal(report.serving_patch_status, 'unknown')
   assert.equal(report.php_version, version)
   assert.equal(report.exit_code, code)
   return report
@@ -83,17 +113,62 @@ for (const version of ['5.4.45', '5.5.38', '5.6.40', '7.0.33', '7.1.33', '7.2.34
   })
 }
 
-for (const version of ['8.6.0', '9.0.0', '8.4', 'not-a-version', '8.4.27RC1', '8.4.27-rc1', '8.4.27~beta1', '8.1.35RC1', '8.1.35-dev']) {
+for (const [version, numericVersion] of [
+  ['8.6.0', '8.6.0'], ['9.0.0', '9.0.0'], ['8.4', null], ['not-a-version', null],
+  ['8.4.27RC1', '8.4.27'], ['8.4.27-rc1', '8.4.27'], ['8.4.27~beta1', '8.4.27'],
+]) {
   test(`unrecognized or prerelease PHP/${version} => unknown`, async t => {
     const url = await serve(t, (req, res) => { res.setHeader('X-Powered-By', `PHP/${version}`); res.end() })
-    check(await run([url, '--json']), 'unknown', version)
+    check(await run([url, '--json']), 'unknown', numericVersion)
   })
 }
 
-for (const [version, status] of [['8.4.26-1ubuntu1', 'potentially_vulnerable'], ['8.1.2-1ubuntu2.28', 'potentially_vulnerable'], ['8.4.27-1ubuntu1', 'ok']]) {
+for (const version of ['8.4.26-dev', '8.2.30RC1', '7.4.33-dev', '8.1.35RC1', '8.1.35-dev']) {
+  test(`below-fix or older-branch prerelease PHP/${version} warns in both URL modes`, async t => {
+    const url = await serve(t, (req, res) => { res.setHeader('X-Powered-By', `PHP/${version}`); res.end() })
+    const ordinary = check(await run([url, '--json']), 'potentially_vulnerable', version.replace(/(?:[-+~]?(?:dev|alpha|beta|rc)\d*)$/i, ''))
+    assert.match(ordinary.reason, /backported fix/)
+    const compared = check(await run([url, '--compare-methods', '--json']), 'potentially_vulnerable', version.replace(/(?:[-+~]?(?:dev|alpha|beta|rc)\d*)$/i, ''))
+    assert.equal(compared.evidence.observations[0].candidates[0].patch_status, 'potentially_vulnerable')
+    assert.equal(compared.evidence.evidence_sufficient_for_ok, false)
+  })
+}
+
+for (const [header, status, ordinaryVersion, comparedVersion] of [
+  ['Apache [PHP/8.4.26]', 'potentially_vulnerable', '8.4.26', '8.4.26'],
+  ['Apache [PHP/8.4.27]', 'ok', '8.4.27', '8.4.27'],
+  ['PHP  8.4.26', 'potentially_vulnerable', '8.4.26', '8.4.26'],
+  ['PHP\t8.4.26', 'potentially_vulnerable', '8.4.26', '8.4.26'],
+  ['Apache [PHP/8.4.27RC1]', 'unknown', '8.4.27', null],
+  ['PHP/8.4.27]tail', 'unknown', null, null],
+]) {
+  test(`banner boundary ${JSON.stringify(header)} is ${status} in both URL modes`, async t => {
+    const methods = []
+    const url = await serve(t, (req, res) => {
+      methods.push(req.method)
+      res.setHeader('Server', header)
+      res.end()
+    })
+    check(await run([url, '--json']), status, ordinaryVersion)
+    const compared = check(await run([url, '--compare-methods', '--json']), status, comparedVersion)
+    assert.deepEqual(methods, ['HEAD', 'HEAD', 'GET'])
+    assert.deepEqual(compared.evidence.observations.map(o => o.candidates[0].patch_status), [status, status])
+  })
+}
+
+for (const [version, status] of [['8.4.26-1ubuntu1', 'potentially_vulnerable'], ['8.1.2-1ubuntu2.28', 'potentially_vulnerable'], ['8.4.27-1ubuntu1', 'ok'], ['8.4.27-1.devuan1', 'ok']]) {
   test(`distribution suffix PHP/${version} => ${status}`, async t => {
     const url = await serve(t, (req, res) => { res.setHeader('X-Powered-By', `PHP/${version}`); res.end() })
-    check(await run([url, '--json']), status, version)
+    const report = check(await run([url, '--json']), status, version.split('-')[0])
+    if (version === '8.1.2-1ubuntu2.28') {
+      // This package revision is a known Ubuntu fix, but a header cannot bind it to the serving worker.
+      assert.match(report.reason, /backported fix/)
+      assert.equal(report.serving_patch_status, 'unknown')
+    }
+    if (version === '8.4.27-1.devuan1') {
+      const compared = check(await run([url, '--compare-methods', '--json']), 'ok', '8.4.27')
+      assert.equal(compared.evidence.evidence_sufficient_for_ok, true)
+    }
   })
 }
 
@@ -128,18 +203,53 @@ test('a response timeout => unknown', async t => {
 })
 
 for (const statusCode of [405, 501]) {
-  test(`HEAD ${statusCode} falls back to GET and reads PHP headers`, async t => {
+  test(`HEAD ${statusCode} stays unknown without an implicit GET`, async t => {
     const methods = []
     const url = await serve(t, (req, res) => {
       methods.push(req.method)
-      if (req.method === 'HEAD') res.writeHead(statusCode)
-      else res.setHeader('X-Powered-By', 'PHP/8.4.27')
+      if (req.method === 'HEAD') res.statusCode = statusCode
+      res.setHeader('X-Powered-By', 'PHP/8.4.27')
       res.end()
     })
-    check(await run([url, '--json']), 'ok', '8.4.27')
+    const ordinary = check(await run([url, '--json']), 'unknown', null)
+    assert.equal(ordinary.reason, `HEAD request was not supported (HTTP ${statusCode}); no GET request was sent`)
+    assert.deepEqual(methods, ['HEAD'])
+
+    methods.length = 0
+    const comparison = check(await run([url, '--compare-methods', '--json']), 'unknown', null)
     assert.deepEqual(methods, ['HEAD', 'GET'])
+    assert.deepEqual(comparison.evidence.observations.map(o => o.http_status), [statusCode, 200])
+    assert.equal(comparison.evidence.evidence_sufficient_for_ok, false)
   })
 }
+
+for (const [statusCode, version] of [[302, '8.4.27'], [304, '8.4.26'], [404, '8.4.27'], [503, '8.4.26']]) {
+  test(`HEAD ${statusCode} ignores PHP/${version} and stays unknown without GET`, async t => {
+    const methods = []
+    const url = await serve(t, (req, res) => {
+      methods.push(req.method)
+      res.statusCode = statusCode
+      if (statusCode === 302) res.setHeader('Location', 'http://127.0.0.1:1/')
+      res.setHeader('X-Powered-By', `PHP/${version}`)
+      res.end()
+    })
+    const result = check(await run([url, '--json']), 'unknown', null)
+    assert.equal(result.reason, `HEAD request did not return a successful response (HTTP ${statusCode}); no GET request was sent`)
+    assert.deepEqual(methods, ['HEAD'])
+  })
+}
+
+test('a successful 204 HEAD can still classify a PHP banner', async t => {
+  const methods = []
+  const url = await serve(t, (req, res) => {
+    methods.push(req.method)
+    res.statusCode = 204
+    res.setHeader('X-Powered-By', 'PHP/8.4.27')
+    res.end()
+  })
+  check(await run([url, '--json']), 'ok', '8.4.27')
+  assert.deepEqual(methods, ['HEAD'])
+})
 
 for (const [server, poweredBy, expectedVersion, status] of [
   ['8.4.26', '8.4.27', '8.4.26', 'potentially_vulnerable'],
@@ -183,12 +293,278 @@ test('the URL skill runs independently with its bundled checker', async t => {
   t.after(() => rm(directory, { recursive: true, force: true }))
   await cp(path.join(__dirname, 'skills/phpcheck-url'), directory, { recursive: true })
   const methods = []
+  let headStatus = 200
   const url = await serve(t, (req, res) => {
     methods.push(req.method)
+    if (req.method === 'HEAD') res.statusCode = headStatus
     res.setHeader('X-Powered-By', 'PHP/8.4.27')
     res.end()
   })
-  const result = await run([url, '--json'], path.join(directory, 'scripts/phpcheck.js'))
+  const script = path.join(directory, 'scripts/phpcheck.js')
+  const result = await run([url, '--json'], script)
   check(result, 'ok', '8.4.27')
   assert.deepEqual(methods, ['HEAD'])
+
+  methods.length = 0
+  headStatus = 405
+  check(await run([url, '--json'], script), 'unknown', null)
+  assert.deepEqual(methods, ['HEAD'])
+
+  methods.length = 0
+  headStatus = 302
+  check(await run([url, '--json'], script), 'unknown', null)
+  assert.deepEqual(methods, ['HEAD'])
+})
+
+test('opt-in method comparison reports both observations without response bodies', async t => {
+  const methods = []
+  const url = await serve(t, (req, res) => {
+    methods.push(req.method)
+    res.setHeader('X-Powered-By', 'PHP/8.4.27')
+    res.end('private body text')
+  })
+  const result = check(await run([url, '--compare-methods', '--json']), 'ok', '8.4.27')
+  assert.deepEqual(methods, ['HEAD', 'GET'])
+  assert.equal(result.evidence.mode, 'compare_methods')
+  assert.equal(result.evidence.comparison_complete, true)
+  assert.equal(result.evidence.evidence_sufficient_for_ok, true)
+  assert.equal(result.evidence.conflicting_versions, false)
+  assert.ok(Number.isFinite(Date.parse(result.evidence.observed_at)))
+  assert.deepEqual(result.evidence.observations.map(({ method, http_status, candidates }) => ({ method, http_status, candidates })), [
+    { method: 'HEAD', http_status: 200, candidates: [{ header: 'x-powered-by', php_version: '8.4.27', patch_status: 'ok' }] },
+    { method: 'GET', http_status: 200, candidates: [{ header: 'x-powered-by', php_version: '8.4.27', patch_status: 'ok' }] },
+  ])
+  assert.doesNotMatch(JSON.stringify(result), /private body text/)
+  assert.doesNotMatch(JSON.stringify(result), /127\.0\.0\.1/)
+})
+
+test('method mismatch keeps the warning and makes the conflict visible', async t => {
+  const url = await serve(t, (req, res) => {
+    res.setHeader('Server', `PHP/${req.method === 'HEAD' ? '8.4.27' : '8.4.26'}`)
+    res.end()
+  })
+  const result = check(await run([url, '--compare-methods', '--json']), 'potentially_vulnerable', '8.4.26')
+  assert.equal(result.evidence.conflicting_versions, true)
+  assert.equal(result.evidence.evidence_sufficient_for_ok, false)
+  assert.match(result.reason, /different PHP versions/)
+})
+
+test('conflicting fixed banners are unknown rather than a reassuring OK', async t => {
+  const url = await serve(t, (req, res) => {
+    res.setHeader('Server', `PHP/${req.method === 'HEAD' ? '8.4.27' : '8.5.12'}`)
+    res.end()
+  })
+  const result = check(await run([url, '--compare-methods', '--json']), 'unknown', null)
+  assert.equal(result.evidence.conflicting_versions, true)
+  assert.equal(result.evidence.evidence_sufficient_for_ok, false)
+})
+
+test('a failed HEAD still permits GET evidence but cannot produce OK', async t => {
+  const url = await serve(t, (req, res) => {
+    if (req.method === 'HEAD') return req.socket.destroy()
+    res.setHeader('X-Powered-By', 'PHP/8.4.27')
+    res.end()
+  })
+  const result = check(await run([url, '--compare-methods', '--json']), 'unknown', null)
+  assert.equal(result.evidence.comparison_complete, false)
+  assert.equal(result.evidence.observations[0].error, 'request_failed')
+  assert.equal(result.evidence.observations[1].http_status, 200)
+})
+
+test('a fixed banner on GET alone does not establish an OK comparison', async t => {
+  const url = await serve(t, (req, res) => {
+    if (req.method === 'GET') res.setHeader('X-Powered-By', 'PHP/8.4.27')
+    res.end()
+  })
+  const result = check(await run([url, '--compare-methods', '--json']), 'unknown', null)
+  assert.equal(result.evidence.comparison_complete, true)
+  assert.equal(result.evidence.evidence_sufficient_for_ok, false)
+})
+
+test('a redirect warning banner remains evidence when GET advertises a fixed version', async t => {
+  const methods = []
+  const url = await serve(t, (req, res) => {
+    methods.push(req.method)
+    if (req.method === 'HEAD') {
+      res.statusCode = 302
+      res.setHeader('Location', 'http://127.0.0.1:1/not-followed')
+      res.setHeader('X-Powered-By', 'PHP/8.4.26')
+    } else {
+      res.setHeader('X-Powered-By', 'PHP/8.4.27')
+    }
+    res.end()
+  })
+  const result = check(await run([url, '--compare-methods', '--json']), 'unknown', null)
+  assert.deepEqual(methods, ['HEAD', 'GET'])
+  assert.deepEqual(result.evidence.observations.map(o => o.http_status), [302, 200])
+  assert.deepEqual(result.evidence.observations.map(o => o.candidates[0].php_version), ['8.4.26', '8.4.27'])
+  assert.deepEqual(result.evidence.observations.map(o => o.candidates[0].patch_status), ['unknown', 'ok'])
+  assert.equal(result.evidence.conflicting_versions, true)
+  assert.equal(result.evidence.evidence_sufficient_for_ok, false)
+  assert.match(result.reason, /non-2xx responses are evidence only/)
+})
+
+test('non-2xx-only warning banners remain evidence without a verdict', async t => {
+  const url = await serve(t, (req, res) => {
+    res.statusCode = req.method === 'HEAD' ? 503 : 404
+    res.setHeader('X-Powered-By', 'PHP/8.4.26')
+    res.end()
+  })
+  const result = check(await run([url, '--compare-methods', '--json']), 'unknown', null)
+  assert.deepEqual(result.evidence.observations.map(o => o.http_status), [503, 404])
+  assert.deepEqual(result.evidence.observations.map(o => o.candidates[0].php_version), ['8.4.26', '8.4.26'])
+  assert.deepEqual(result.evidence.observations.map(o => o.candidates[0].patch_status), ['unknown', 'unknown'])
+  assert.equal(result.evidence.evidence_sufficient_for_ok, false)
+  assert.match(result.reason, /non-2xx responses are evidence only/)
+})
+
+test('a successful GET warning still determines the verdict beside a redirect', async t => {
+  const url = await serve(t, (req, res) => {
+    if (req.method === 'HEAD') {
+      res.statusCode = 302
+      res.setHeader('X-Powered-By', 'PHP/8.4.27')
+    } else {
+      res.setHeader('X-Powered-By', 'PHP/8.4.26')
+    }
+    res.end()
+  })
+  const result = check(await run([url, '--compare-methods', '--json']), 'potentially_vulnerable', '8.4.26')
+  assert.deepEqual(result.evidence.observations.map(o => o.http_status), [302, 200])
+  assert.deepEqual(result.evidence.observations.map(o => o.candidates[0].patch_status), ['unknown', 'potentially_vulnerable'])
+  assert.equal(result.evidence.conflicting_versions, true)
+  assert.equal(result.evidence.evidence_sufficient_for_ok, false)
+})
+
+test('redirect banners do not establish an OK comparison', async t => {
+  const url = await serve(t, (req, res) => {
+    res.statusCode = 302
+    res.setHeader('X-Powered-By', 'PHP/8.4.27')
+    res.setHeader('Location', 'http://127.0.0.1:1/')
+    res.end()
+  })
+  const result = check(await run([url, '--compare-methods', '--json']), 'unknown', null)
+  assert.equal(result.evidence.evidence_sufficient_for_ok, false)
+  assert.deepEqual(result.evidence.observations.map(o => o.http_status), [302, 302])
+})
+
+test('comparison does not follow redirects or echo arbitrary header tokens', async t => {
+  const methods = []
+  const url = await serve(t, (req, res) => {
+    methods.push(req.method)
+    res.statusCode = 302
+    res.setHeader('Location', 'http://127.0.0.1:1/should-not-be-requested')
+    res.setHeader('X-Powered-By', 'PHP/8.4.27@private-token')
+    res.end()
+  })
+  const result = check(await run([url, '--compare-methods', '--json']), 'unknown', null)
+  assert.deepEqual(methods, ['HEAD', 'GET'])
+  assert.deepEqual(result.evidence.observations.map(o => o.http_status), [302, 302])
+  assert.equal(result.evidence.observations[0].candidates[0].php_version, null)
+  assert.equal(result.evidence.evidence_sufficient_for_ok, false)
+  assert.doesNotMatch(JSON.stringify(result), /private-token|should-not-be-requested/)
+})
+
+test('comparison strips target-controlled package suffixes from evidence', async t => {
+  const url = await serve(t, (req, res) => {
+    res.setHeader('X-Powered-By', 'PHP/8.4.27+private_token')
+    res.end()
+  })
+  const result = check(await run([url, '--compare-methods', '--json']), 'ok', '8.4.27')
+  assert.doesNotMatch(JSON.stringify(result), /private_token/)
+  assert.equal(result.evidence.observations[0].candidates[0].php_version, '8.4.27')
+})
+
+test('ordinary HEAD strips target-controlled banner tokens from JSON and text', async () => {
+  const cases = [
+    ['PHP/8.4.27+private_token', 'ok', '8.4.27'],
+    ['PHP/8.4.26+private_token', 'potentially_vulnerable', '8.4.26'],
+    ['PHP/8.1.35-dev+private_token', 'potentially_vulnerable', '8.1.35'],
+    ['PHP/8.4.27-rc1+private_token', 'unknown', '8.4.27'],
+    ['PHP/8.4.27@private_token', 'unknown', null],
+    [`PHP/8.4.${'9'.repeat(100)}`, 'unknown', null],
+  ]
+  for (const [header, status, version] of cases) {
+    const jsonResult = await runInjectedHead(header)
+    const report = check(jsonResult, status, version)
+    assert.doesNotMatch(JSON.stringify(report), /private_token|9{80}/)
+    const textResult = await runInjectedHead(header, [])
+    assert.equal(textResult.stderr, '')
+    assert.equal(textResult.code, jsonResult.code)
+    assert.doesNotMatch(textResult.stdout, /private_token|9{80}/)
+  }
+})
+
+for (const version of ['8.4.27-rc1', '8.4.27RC1']) {
+  test(`comparison keeps fixed-patch prerelease PHP/${version} unknown after stripping its suffix`, async t => {
+    const url = await serve(t, (req, res) => {
+      res.setHeader('X-Powered-By', `PHP/${version}`)
+      res.end()
+    })
+    const result = check(await run([url, '--compare-methods', '--json']), 'unknown', null)
+    assert.equal(result.evidence.observations[0].candidates[0].php_version, '8.4.27')
+    assert.equal(result.evidence.observations[0].candidates[0].patch_status, 'unknown')
+    assert.equal(result.evidence.evidence_sufficient_for_ok, false)
+    assert.match(result.reason, /could not be classified/)
+  })
+}
+
+test('oversized numeric banners cannot become OK or enter the report', async t => {
+  const patch = '9'.repeat(3000)
+  let header = `PHP/8.4.${patch}`
+  let alsoAdvertiseFixed = false
+  const methods = []
+  const url = await serve(t, (req, res) => {
+    methods.push(req.method)
+    res.setHeader('Server', header)
+    if (alsoAdvertiseFixed) res.setHeader('X-Powered-By', 'PHP/8.4.27')
+    res.end()
+  })
+  const ordinary = check(await run([url, '--json']), 'unknown', null)
+  assert.equal(ordinary.reason, 'PHP banner could not be classified.')
+  assert.doesNotMatch(JSON.stringify(ordinary), /9{100}/)
+  assert.deepEqual(methods, ['HEAD'])
+
+  const result = check(await run([url, '--compare-methods', '--json']), 'unknown', null)
+  assert.equal(result.evidence.observations[0].candidates[0].php_version, null)
+  assert.equal(result.evidence.evidence_sufficient_for_ok, false)
+  assert.doesNotMatch(JSON.stringify(result), /9{100}/)
+
+  alsoAdvertiseFixed = true
+  const mixed = check(await run([url, '--json']), 'unknown', null)
+  assert.doesNotMatch(JSON.stringify(mixed), /9{100}/)
+
+  header = 'PHP/8.4.27'
+  alsoAdvertiseFixed = false
+  methods.length = 0
+  check(await run([url, '--json']), 'ok', '8.4.27')
+  assert.deepEqual(methods, ['HEAD'])
+})
+
+test('zero-padded PHP banners cannot produce an OK result', async t => {
+  const url = await serve(t, (req, res) => {
+    res.setHeader('X-Powered-By', 'PHP/0008.0004.0027')
+    res.end()
+  })
+  const comparison = check(await run([url, '--compare-methods', '--json']), 'unknown', null)
+  assert.equal(comparison.evidence.comparison_complete, true)
+  assert.equal(comparison.evidence.evidence_sufficient_for_ok, false)
+  assert.deepEqual(comparison.evidence.observations.map(o => o.candidates[0]), [
+    { header: 'x-powered-by', php_version: null, patch_status: 'unknown' },
+    { header: 'x-powered-by', php_version: null, patch_status: 'unknown' },
+  ])
+  check(await run([url, '--json']), 'unknown', null)
+})
+
+test('comparison requires JSON before sending requests', async t => {
+  const methods = []
+  const url = await serve(t, (req, res) => { methods.push(req.method); res.end() })
+  const result = await run([url, '--compare-methods'])
+  assert.equal(result.code, 2)
+  assert.match(result.stderr, /--compare-methods requires --json/)
+  assert.deepEqual(methods, [])
+})
+
+test('comparison rejects a non-HTTP URL without implying a serving patch verdict', async () => {
+  const report = check(await run(['file:///not-a-target', '--compare-methods', '--json']), 'unknown', null)
+  assert.match(report.reason, /http:\/\/ or https:\/\//)
 })
