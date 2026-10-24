@@ -18,6 +18,35 @@ function run(args, script = path.join(__dirname, 'phpcheck.js')) {
   })
 }
 
+function runInjectedHead(header, args = ['--json']) {
+  const script = path.join(__dirname, 'skills/phpcheck-url/scripts/phpcheck.js')
+  const bootstrap = `
+    const script = ${JSON.stringify(script)}
+    const header = ${JSON.stringify(header)}
+    global.fetch = async (url, options) => {
+      if (url.href !== 'https://fixture.invalid/' || options.method !== 'HEAD' || options.redirect !== 'manual') {
+        throw new Error('Unexpected request')
+      }
+      return {
+        status: 200,
+        headers: { get: name => name === 'x-powered-by' ? header : null },
+        body: { cancel: async () => {} },
+      }
+    }
+    // node -e starts positional parsing at argv[1].
+    process.argv = [process.execPath, 'https://fixture.invalid/', ...${JSON.stringify(args)}]
+    require(script)
+  `
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['-e', bootstrap])
+    let stdout = '', stderr = ''
+    child.stdout.on('data', chunk => { stdout += chunk })
+    child.stderr.on('data', chunk => { stderr += chunk })
+    child.on('error', reject)
+    child.on('close', code => resolve({ code, stdout, stderr }))
+  })
+}
+
 async function serve(t, handler) {
   const server = http.createServer(handler)
   server.listen(0, '127.0.0.1')
@@ -84,17 +113,20 @@ for (const version of ['5.4.45', '5.5.38', '5.6.40', '7.0.33', '7.1.33', '7.2.34
   })
 }
 
-for (const version of ['8.6.0', '9.0.0', '8.4', 'not-a-version', '8.4.27RC1', '8.4.27-rc1', '8.4.27~beta1']) {
+for (const [version, numericVersion] of [
+  ['8.6.0', '8.6.0'], ['9.0.0', '9.0.0'], ['8.4', null], ['not-a-version', null],
+  ['8.4.27RC1', '8.4.27'], ['8.4.27-rc1', '8.4.27'], ['8.4.27~beta1', '8.4.27'],
+]) {
   test(`unrecognized or prerelease PHP/${version} => unknown`, async t => {
     const url = await serve(t, (req, res) => { res.setHeader('X-Powered-By', `PHP/${version}`); res.end() })
-    check(await run([url, '--json']), 'unknown', version)
+    check(await run([url, '--json']), 'unknown', numericVersion)
   })
 }
 
 for (const version of ['8.4.26-dev', '8.2.30RC1', '7.4.33-dev', '8.1.35RC1', '8.1.35-dev']) {
   test(`below-fix or older-branch prerelease PHP/${version} warns in both URL modes`, async t => {
     const url = await serve(t, (req, res) => { res.setHeader('X-Powered-By', `PHP/${version}`); res.end() })
-    const ordinary = check(await run([url, '--json']), 'potentially_vulnerable', version)
+    const ordinary = check(await run([url, '--json']), 'potentially_vulnerable', version.replace(/(?:[-+~]?(?:dev|alpha|beta|rc)\d*)$/i, ''))
     assert.match(ordinary.reason, /backported fix/)
     const compared = check(await run([url, '--compare-methods', '--json']), 'potentially_vulnerable', version.replace(/(?:[-+~]?(?:dev|alpha|beta|rc)\d*)$/i, ''))
     assert.equal(compared.evidence.observations[0].candidates[0].patch_status, 'potentially_vulnerable')
@@ -107,8 +139,8 @@ for (const [header, status, ordinaryVersion, comparedVersion] of [
   ['Apache [PHP/8.4.27]', 'ok', '8.4.27', '8.4.27'],
   ['PHP  8.4.26', 'potentially_vulnerable', '8.4.26', '8.4.26'],
   ['PHP\t8.4.26', 'potentially_vulnerable', '8.4.26', '8.4.26'],
-  ['Apache [PHP/8.4.27RC1]', 'unknown', '8.4.27RC1', null],
-  ['PHP/8.4.27]tail', 'unknown', '8.4.27]tail', null],
+  ['Apache [PHP/8.4.27RC1]', 'unknown', '8.4.27', null],
+  ['PHP/8.4.27]tail', 'unknown', null, null],
 ]) {
   test(`banner boundary ${JSON.stringify(header)} is ${status} in both URL modes`, async t => {
     const methods = []
@@ -127,7 +159,7 @@ for (const [header, status, ordinaryVersion, comparedVersion] of [
 for (const [version, status] of [['8.4.26-1ubuntu1', 'potentially_vulnerable'], ['8.1.2-1ubuntu2.28', 'potentially_vulnerable'], ['8.4.27-1ubuntu1', 'ok'], ['8.4.27-1.devuan1', 'ok']]) {
   test(`distribution suffix PHP/${version} => ${status}`, async t => {
     const url = await serve(t, (req, res) => { res.setHeader('X-Powered-By', `PHP/${version}`); res.end() })
-    const report = check(await run([url, '--json']), status, version)
+    const report = check(await run([url, '--json']), status, version.split('-')[0])
     if (version === '8.1.2-1ubuntu2.28') {
       // This package revision is a known Ubuntu fix, but a header cannot bind it to the serving worker.
       assert.match(report.reason, /backported fix/)
@@ -440,6 +472,26 @@ test('comparison strips target-controlled package suffixes from evidence', async
   const result = check(await run([url, '--compare-methods', '--json']), 'ok', '8.4.27')
   assert.doesNotMatch(JSON.stringify(result), /private_token/)
   assert.equal(result.evidence.observations[0].candidates[0].php_version, '8.4.27')
+})
+
+test('ordinary HEAD strips target-controlled banner tokens from JSON and text', async () => {
+  const cases = [
+    ['PHP/8.4.27+private_token', 'ok', '8.4.27'],
+    ['PHP/8.4.26+private_token', 'potentially_vulnerable', '8.4.26'],
+    ['PHP/8.1.35-dev+private_token', 'potentially_vulnerable', '8.1.35'],
+    ['PHP/8.4.27-rc1+private_token', 'unknown', '8.4.27'],
+    ['PHP/8.4.27@private_token', 'unknown', null],
+    [`PHP/8.4.${'9'.repeat(100)}`, 'unknown', null],
+  ]
+  for (const [header, status, version] of cases) {
+    const jsonResult = await runInjectedHead(header)
+    const report = check(jsonResult, status, version)
+    assert.doesNotMatch(JSON.stringify(report), /private_token|9{80}/)
+    const textResult = await runInjectedHead(header, [])
+    assert.equal(textResult.stderr, '')
+    assert.equal(textResult.code, jsonResult.code)
+    assert.doesNotMatch(textResult.stdout, /private_token|9{80}/)
+  }
 })
 
 for (const version of ['8.4.27-rc1', '8.4.27RC1']) {

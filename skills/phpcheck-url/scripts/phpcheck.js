@@ -196,8 +196,9 @@ async function main() {
     for (const match of text.matchAll(PHP_BANNER)) {
       const token = bannerToken(match)
       const candidateStatus = versionStatus(token)
-      // Keep unbounded, target-controlled banner tokens out of reports.
-      const candidateVersion = token.length <= 80 ? token : null
+      // Emit the same bounded numeric evidence as comparison mode. Header
+      // suffixes are target-controlled and can contain private identifiers.
+      const candidateVersion = safeVersion(token)
       // Prefer warnings and unrecognized versions over a reassuring banner.
       if (!seenCandidate || candidateStatus === 'potentially_vulnerable' || status === 'ok') {
         version = candidateVersion
