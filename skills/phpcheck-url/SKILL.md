@@ -16,6 +16,8 @@ Ordinary URL checks send only `HEAD`. A non-2xx response (including a redirect
 or error page) returns `unknown` without sending `GET` or classifying its PHP
 banner. HTTP 405 and 501 retain a specific "HEAD request was not supported"
 reason.
+Both URL modes report only bounded numeric PHP versions. Server-controlled
+build suffixes and malformed version tokens are omitted from JSON and text.
 
 On that authorized site, use `--compare-methods --json` to send `HEAD` and
 `GET` to the same URL and inspect each response's status and

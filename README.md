@@ -82,6 +82,8 @@ does not send `GET`, follow redirects, or inspect response bodies. A non-2xx
 `HEAD` response returns `UNKNOWN`, even when it advertises a PHP version; 405
 and 501 retain a specific "HEAD request was not supported" reason. On an
 authorized target, `--compare-methods --json` explicitly sends both methods.
+Both modes report only a bounded numeric PHP version. Server-controlled build
+suffixes and malformed version tokens are omitted from JSON and text output.
 Non-2xx banners remain visible in comparison evidence but do not determine
 the top-level verdict. Missing or hidden PHP headers also return `UNKNOWN`.
 
