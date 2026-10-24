@@ -102,6 +102,28 @@ for (const version of ['8.4.26-dev', '8.2.30RC1', '7.4.33-dev', '8.1.35RC1', '8.
   })
 }
 
+for (const [header, status, ordinaryVersion, comparedVersion] of [
+  ['Apache [PHP/8.4.26]', 'potentially_vulnerable', '8.4.26', '8.4.26'],
+  ['Apache [PHP/8.4.27]', 'ok', '8.4.27', '8.4.27'],
+  ['PHP  8.4.26', 'potentially_vulnerable', '8.4.26', '8.4.26'],
+  ['PHP\t8.4.26', 'potentially_vulnerable', '8.4.26', '8.4.26'],
+  ['Apache [PHP/8.4.27RC1]', 'unknown', '8.4.27RC1', null],
+  ['PHP/8.4.27]tail', 'unknown', '8.4.27]tail', null],
+]) {
+  test(`banner boundary ${JSON.stringify(header)} is ${status} in both URL modes`, async t => {
+    const methods = []
+    const url = await serve(t, (req, res) => {
+      methods.push(req.method)
+      res.setHeader('Server', header)
+      res.end()
+    })
+    check(await run([url, '--json']), status, ordinaryVersion)
+    const compared = check(await run([url, '--compare-methods', '--json']), status, comparedVersion)
+    assert.deepEqual(methods, ['HEAD', 'HEAD', 'GET'])
+    assert.deepEqual(compared.evidence.observations.map(o => o.candidates[0].patch_status), [status, status])
+  })
+}
+
 for (const [version, status] of [['8.4.26-1ubuntu1', 'potentially_vulnerable'], ['8.1.2-1ubuntu2.28', 'potentially_vulnerable'], ['8.4.27-1ubuntu1', 'ok'], ['8.4.27-1.devuan1', 'ok']]) {
   test(`distribution suffix PHP/${version} => ${status}`, async t => {
     const url = await serve(t, (req, res) => { res.setHeader('X-Powered-By', `PHP/${version}`); res.end() })

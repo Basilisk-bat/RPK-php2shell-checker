@@ -5,6 +5,7 @@ const VERSION = '1.0.0'
 // Official PHP releases fixing both CVEs, published 2026-10-21.
 const FIXED_IN = { '8.2': 35, '8.3': 36, '8.4': 27, '8.5': 12 }
 const OLDER_BRANCHES = new Set(['5.4', '5.5', '5.6', '7.0', '7.1', '7.2', '7.3', '7.4', '8.0', '8.1'])
+const PHP_BANNER = /(\[)?\bPHP(?:\/|[ \t]+)([^\s,;)]+)/gi
 const USAGE = 'Usage: node phpcheck.js URL [--timeout SECONDS] [--json] [--compare-methods]\n' +
   '       node phpcheck.js --version\n' +
   'Check only an owned or explicitly authorized target; ordinary mode sends HEAD, comparison adds GET.'
@@ -60,14 +61,20 @@ function safeVersion(token) {
   return match ? match[1] : null
 }
 
+function bannerToken(match) {
+  // Strip a closing bracket only when this banner opened with one.
+  return match[1] && match[2].endsWith(']') ? match[2].slice(0, -1) : match[2]
+}
+
 function headerCandidates(response) {
   const candidates = []
   for (const header of ['server', 'x-powered-by']) {
-    for (const match of (response.headers.get(header) || '').matchAll(/\bPHP[ /]([^\s,;)]+)/gi)) {
-      const phpVersion = safeVersion(match[1])
+    for (const match of (response.headers.get(header) || '').matchAll(PHP_BANNER)) {
+      const token = bannerToken(match)
+      const phpVersion = safeVersion(token)
       candidates.push({
         header, php_version: phpVersion,
-        patch_status: phpVersion && isSuccessfulStatus(response.status) ? versionStatus(match[1]) : 'unknown',
+        patch_status: phpVersion && isSuccessfulStatus(response.status) ? versionStatus(token) : 'unknown',
       })
     }
   }
@@ -186,10 +193,11 @@ async function main() {
   let version = null, seenCandidate = false, error = null, status = 'unknown'
   try {
     const text = await urlHeaders(address, timeout)
-    for (const match of text.matchAll(/\bPHP[ /]([^\s,;)]+)/gi)) {
-      const candidateStatus = versionStatus(match[1])
+    for (const match of text.matchAll(PHP_BANNER)) {
+      const token = bannerToken(match)
+      const candidateStatus = versionStatus(token)
       // Keep unbounded, target-controlled banner tokens out of reports.
-      const candidateVersion = match[1].length <= 80 ? match[1] : null
+      const candidateVersion = token.length <= 80 ? token : null
       // Prefer warnings and unrecognized versions over a reassuring banner.
       if (!seenCandidate || candidateStatus === 'potentially_vulnerable' || status === 'ok') {
         version = candidateVersion
