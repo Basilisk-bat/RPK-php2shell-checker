@@ -53,7 +53,7 @@ the serving build or exploitability.
 | --- | --- | --- |
 | `OK` | `0` | Advertised version meets an upstream fixed release; serving build is unverified. |
 | `POTENTIALLY VULNERABLE` | `1` | Advertised upstream version is below a fix or on an older branch; serving build is unverified. |
-| `UNKNOWN` | `3` | Missing or unrecognized version, prerelease, or failed check. |
+| `UNKNOWN` | `3` | Missing or unrecognized version, prerelease at or above a fixed patch, or failed check. |
 
 Use `--json` for machine-readable output. `patch_status` is `ok`,
 `potentially_vulnerable` or `unknown`; it is a version-based URL check, not a
@@ -65,6 +65,9 @@ Invalid arguments exit with code `2`.
 Versions below a listed upstream fix return `potentially_vulnerable` and
 exit `1`. PHP 5.4–5.6, 7.0–7.4, 8.0 and 8.1 also return this warning, even
 with a higher patch number such as 8.1.35.
+This includes prerelease banners below a listed fix or on an older branch.
+At or above a fixed patch, a prerelease stays `unknown` because it may predate
+the final security fix.
 
 ## URL checks
 

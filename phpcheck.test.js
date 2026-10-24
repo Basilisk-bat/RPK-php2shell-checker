@@ -84,14 +84,25 @@ for (const version of ['5.4.45', '5.5.38', '5.6.40', '7.0.33', '7.1.33', '7.2.34
   })
 }
 
-for (const version of ['8.6.0', '9.0.0', '8.4', 'not-a-version', '8.4.27RC1', '8.4.27-rc1', '8.4.27~beta1', '8.1.35RC1', '8.1.35-dev']) {
+for (const version of ['8.6.0', '9.0.0', '8.4', 'not-a-version', '8.4.27RC1', '8.4.27-rc1', '8.4.27~beta1']) {
   test(`unrecognized or prerelease PHP/${version} => unknown`, async t => {
     const url = await serve(t, (req, res) => { res.setHeader('X-Powered-By', `PHP/${version}`); res.end() })
     check(await run([url, '--json']), 'unknown', version)
   })
 }
 
-for (const [version, status] of [['8.4.26-1ubuntu1', 'potentially_vulnerable'], ['8.1.2-1ubuntu2.28', 'potentially_vulnerable'], ['8.4.27-1ubuntu1', 'ok']]) {
+for (const version of ['8.4.26-dev', '8.2.30RC1', '7.4.33-dev', '8.1.35RC1', '8.1.35-dev']) {
+  test(`below-fix or older-branch prerelease PHP/${version} warns in both URL modes`, async t => {
+    const url = await serve(t, (req, res) => { res.setHeader('X-Powered-By', `PHP/${version}`); res.end() })
+    const ordinary = check(await run([url, '--json']), 'potentially_vulnerable', version)
+    assert.match(ordinary.reason, /backported fix/)
+    const compared = check(await run([url, '--compare-methods', '--json']), 'potentially_vulnerable', version.replace(/(?:[-+~]?(?:dev|alpha|beta|rc)\d*)$/i, ''))
+    assert.equal(compared.evidence.observations[0].candidates[0].patch_status, 'potentially_vulnerable')
+    assert.equal(compared.evidence.evidence_sufficient_for_ok, false)
+  })
+}
+
+for (const [version, status] of [['8.4.26-1ubuntu1', 'potentially_vulnerable'], ['8.1.2-1ubuntu2.28', 'potentially_vulnerable'], ['8.4.27-1ubuntu1', 'ok'], ['8.4.27-1.devuan1', 'ok']]) {
   test(`distribution suffix PHP/${version} => ${status}`, async t => {
     const url = await serve(t, (req, res) => { res.setHeader('X-Powered-By', `PHP/${version}`); res.end() })
     const report = check(await run([url, '--json']), status, version)
@@ -99,6 +110,10 @@ for (const [version, status] of [['8.4.26-1ubuntu1', 'potentially_vulnerable'], 
       // This package revision is a known Ubuntu fix, but a header cannot bind it to the serving worker.
       assert.match(report.reason, /backported fix/)
       assert.equal(report.serving_patch_status, 'unknown')
+    }
+    if (version === '8.4.27-1.devuan1') {
+      const compared = check(await run([url, '--compare-methods', '--json']), 'ok', '8.4.27')
+      assert.equal(compared.evidence.evidence_sufficient_for_ok, true)
     }
   })
 }
@@ -351,17 +366,19 @@ test('comparison strips target-controlled package suffixes from evidence', async
   assert.equal(result.evidence.observations[0].candidates[0].php_version, '8.4.27')
 })
 
-test('comparison keeps prerelease versions unknown after stripping their suffix', async t => {
-  const url = await serve(t, (req, res) => {
-    res.setHeader('X-Powered-By', 'PHP/8.4.27-rc1')
-    res.end()
+for (const version of ['8.4.27-rc1', '8.4.27RC1']) {
+  test(`comparison keeps fixed-patch prerelease PHP/${version} unknown after stripping its suffix`, async t => {
+    const url = await serve(t, (req, res) => {
+      res.setHeader('X-Powered-By', `PHP/${version}`)
+      res.end()
+    })
+    const result = check(await run([url, '--compare-methods', '--json']), 'unknown', null)
+    assert.equal(result.evidence.observations[0].candidates[0].php_version, '8.4.27')
+    assert.equal(result.evidence.observations[0].candidates[0].patch_status, 'unknown')
+    assert.equal(result.evidence.evidence_sufficient_for_ok, false)
+    assert.match(result.reason, /could not be classified/)
   })
-  const result = check(await run([url, '--compare-methods', '--json']), 'unknown', null)
-  assert.equal(result.evidence.observations[0].candidates[0].php_version, '8.4.27')
-  assert.equal(result.evidence.observations[0].candidates[0].patch_status, 'unknown')
-  assert.equal(result.evidence.evidence_sufficient_for_ok, false)
-  assert.match(result.reason, /could not be classified/)
-})
+}
 
 test('oversized numeric banners cannot become OK or enter the report', async t => {
   const patch = '9'.repeat(3000)

@@ -11,15 +11,17 @@ const USAGE = 'Usage: node phpcheck.js URL [--timeout SECONDS] [--json] [--compa
 function versionStatus(version) {
   // Keep the ordinary URL verdict within the same bounded version grammar used
   // for comparison evidence. Unbounded digits can become Infinity in Number().
-  if (!safeVersion(version)) return 'unknown'
-  const match = /^((?:0|[1-9]\d*))\.((?:0|[1-9]\d*))\.((?:0|[1-9]\d*))([-+~].*)?$/.exec(version || '')
-  if (!match) return 'unknown'
-  if (/(?:^|[-+~.])(?:dev|alpha|beta|rc)/i.test(match[4] || '')) return 'unknown'
-  const branch = `${Number(match[1])}.${Number(match[2])}`
+  const numericVersion = safeVersion(version)
+  if (!numericVersion) return 'unknown'
+  const [major, minor, patch] = numericVersion.split('.').map(Number)
+  const branch = `${major}.${minor}`
   if (OLDER_BRANCHES.has(branch)) return 'potentially_vulnerable'
   const fixed = FIXED_IN[branch]
   if (fixed === undefined) return 'unknown'
-  if (Number(match[3]) < fixed) return 'potentially_vulnerable'
+  if (patch < fixed) return 'potentially_vulnerable'
+  // A prerelease of the fixed patch might not contain the final fix.
+  const suffix = version.slice(numericVersion.length)
+  if (/(?:^|[-+~.])(?:dev|alpha|beta|rc)\d*(?=$|[-+~.])/i.test(suffix)) return 'unknown'
   return 'ok'
 }
 
@@ -49,7 +51,7 @@ async function urlHeaders(address, timeout) {
 // Report only numeric versions. A server controls header values, including
 // build suffixes, so the evidence mode must not echo those suffixes.
 function safeVersion(token) {
-  const match = /^((?:0|[1-9]\d{0,3})\.(?:0|[1-9]\d{0,3})\.(?:0|[1-9]\d{0,3}))(?:[-+~][A-Za-z0-9.+~_-]{1,64})?$/.exec(token)
+  const match = /^((?:0|[1-9]\d{0,3})\.(?:0|[1-9]\d{0,3})\.(?:0|[1-9]\d{0,3}))(?:[-+~][A-Za-z0-9.+~_-]{1,64}|(?:dev|alpha|beta|rc)\d{0,4})?$/i.exec(token)
   return match ? match[1] : null
 }
 
