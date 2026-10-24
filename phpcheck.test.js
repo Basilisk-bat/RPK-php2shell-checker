@@ -154,6 +154,34 @@ for (const statusCode of [405, 501]) {
   })
 }
 
+for (const [statusCode, version] of [[302, '8.4.27'], [304, '8.4.26'], [404, '8.4.27'], [503, '8.4.26']]) {
+  test(`HEAD ${statusCode} ignores PHP/${version} and stays unknown without GET`, async t => {
+    const methods = []
+    const url = await serve(t, (req, res) => {
+      methods.push(req.method)
+      res.statusCode = statusCode
+      if (statusCode === 302) res.setHeader('Location', 'http://127.0.0.1:1/')
+      res.setHeader('X-Powered-By', `PHP/${version}`)
+      res.end()
+    })
+    const result = check(await run([url, '--json']), 'unknown', null)
+    assert.equal(result.reason, `HEAD request did not return a successful response (HTTP ${statusCode}); no GET request was sent`)
+    assert.deepEqual(methods, ['HEAD'])
+  })
+}
+
+test('a successful 204 HEAD can still classify a PHP banner', async t => {
+  const methods = []
+  const url = await serve(t, (req, res) => {
+    methods.push(req.method)
+    res.statusCode = 204
+    res.setHeader('X-Powered-By', 'PHP/8.4.27')
+    res.end()
+  })
+  check(await run([url, '--json']), 'ok', '8.4.27')
+  assert.deepEqual(methods, ['HEAD'])
+})
+
 for (const [server, poweredBy, expectedVersion, status] of [
   ['8.4.26', '8.4.27', '8.4.26', 'potentially_vulnerable'],
   ['8.4.27', '8.4.26', '8.4.26', 'potentially_vulnerable'],
@@ -210,6 +238,11 @@ test('the URL skill runs independently with its bundled checker', async t => {
 
   methods.length = 0
   headStatus = 405
+  check(await run([url, '--json'], script), 'unknown', null)
+  assert.deepEqual(methods, ['HEAD'])
+
+  methods.length = 0
+  headStatus = 302
   check(await run([url, '--json'], script), 'unknown', null)
   assert.deepEqual(methods, ['HEAD'])
 })

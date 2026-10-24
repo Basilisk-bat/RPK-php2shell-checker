@@ -37,6 +37,9 @@ async function urlHeaders(address, timeout) {
   if ([405, 501].includes(response.status)) {
     throw new Error(`HEAD request was not supported (HTTP ${response.status}); no GET request was sent`)
   }
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`HEAD request did not return a successful response (HTTP ${response.status}); no GET request was sent`)
+  }
   return [response.headers.get('server') || '', response.headers.get('x-powered-by') || ''].join('\n')
 }
 
